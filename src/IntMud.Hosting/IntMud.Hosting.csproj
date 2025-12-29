@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <RootNamespace>IntMud.Hosting</RootNamespace>
+    <Description>Hosting, DI, and observability for IntMUD</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.1" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.7.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.Prometheus.AspNetCore" Version="1.7.0-rc.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntMud.Core\IntMud.Core.csproj" />
+    <ProjectReference Include="..\IntMud.Types\IntMud.Types.csproj" />
+    <ProjectReference Include="..\IntMud.Runtime\IntMud.Runtime.csproj" />
+    <ProjectReference Include="..\IntMud.BuiltinFunctions\IntMud.BuiltinFunctions.csproj" />
+    <ProjectReference Include="..\IntMud.Compiler\IntMud.Compiler.csproj" />
+    <ProjectReference Include="..\IntMud.Networking\IntMud.Networking.csproj" />
+  </ItemGroup>
+
+</Project>

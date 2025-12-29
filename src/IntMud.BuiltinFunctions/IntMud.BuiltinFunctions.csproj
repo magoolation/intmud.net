@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>preview</LangVersion>
+    <RootNamespace>IntMud.BuiltinFunctions</RootNamespace>
+    <Description>145+ built-in functions for IntMUD</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\IntMud.Core\IntMud.Core.csproj" />
+    <ProjectReference Include="..\IntMud.Types\IntMud.Types.csproj" />
+    <ProjectReference Include="..\IntMud.Runtime\IntMud.Runtime.csproj" />
+  </ItemGroup>
+
+</Project>
