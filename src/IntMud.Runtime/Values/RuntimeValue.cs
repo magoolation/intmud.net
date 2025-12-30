@@ -219,6 +219,97 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
     };
 
     /// <summary>
+    /// Get value at index (for arrays).
+    /// </summary>
+    public RuntimeValue GetIndex(int index)
+    {
+        if (_type != RuntimeValueType.Array) return Null;
+        var list = _objectValue as List<RuntimeValue>;
+        if (list == null || index < 0 || index >= list.Count) return Null;
+        return list[index];
+    }
+
+    /// <summary>
+    /// Set value at index (for arrays).
+    /// </summary>
+    public void SetIndex(int index, RuntimeValue value)
+    {
+        if (_type != RuntimeValueType.Array) return;
+        var list = _objectValue as List<RuntimeValue>;
+        if (list == null) return;
+        // Extend array if needed
+        while (list.Count <= index)
+            list.Add(Null);
+        list[index] = value;
+    }
+
+    /// <summary>
+    /// Push a value to the end of the array.
+    /// </summary>
+    public void ArrayPush(RuntimeValue value)
+    {
+        if (_type != RuntimeValueType.Array) return;
+        var list = _objectValue as List<RuntimeValue>;
+        list?.Add(value);
+    }
+
+    /// <summary>
+    /// Pop a value from the end of the array.
+    /// </summary>
+    public RuntimeValue ArrayPop()
+    {
+        if (_type != RuntimeValueType.Array) return Null;
+        var list = _objectValue as List<RuntimeValue>;
+        if (list == null || list.Count == 0) return Null;
+        var value = list[list.Count - 1];
+        list.RemoveAt(list.Count - 1);
+        return value;
+    }
+
+    /// <summary>
+    /// Remove and return the first element of the array.
+    /// </summary>
+    public RuntimeValue ArrayShift()
+    {
+        if (_type != RuntimeValueType.Array) return Null;
+        var list = _objectValue as List<RuntimeValue>;
+        if (list == null || list.Count == 0) return Null;
+        var value = list[0];
+        list.RemoveAt(0);
+        return value;
+    }
+
+    /// <summary>
+    /// Add a value to the beginning of the array.
+    /// </summary>
+    public void ArrayUnshift(RuntimeValue value)
+    {
+        if (_type != RuntimeValueType.Array) return;
+        var list = _objectValue as List<RuntimeValue>;
+        list?.Insert(0, value);
+    }
+
+    /// <summary>
+    /// Clear all elements from the array.
+    /// </summary>
+    public void ArrayClear()
+    {
+        if (_type != RuntimeValueType.Array) return;
+        var list = _objectValue as List<RuntimeValue>;
+        list?.Clear();
+    }
+
+    /// <summary>
+    /// Reverse the array in place.
+    /// </summary>
+    public void ArrayReverse()
+    {
+        if (_type != RuntimeValueType.Array) return;
+        var list = _objectValue as List<RuntimeValue>;
+        list?.Reverse();
+    }
+
+    /// <summary>
     /// Convert to the same type as another value (for binary operations).
     /// </summary>
     public RuntimeValue ConvertTo(RuntimeValueType targetType) => targetType switch

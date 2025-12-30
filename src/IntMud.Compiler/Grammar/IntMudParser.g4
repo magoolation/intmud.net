@@ -183,7 +183,13 @@ switchStatement
     ;
 
 caseClause
-    : CASOSE STRING statement*
+    : CASOSE caseValue statement*
+    ;
+
+caseValue
+    : STRING
+    | DECIMAL_NUMBER
+    | HEX_NUMBER
     ;
 
 defaultClause

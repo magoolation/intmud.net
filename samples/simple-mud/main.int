@@ -1,0 +1,232 @@
+# ============================================
+# IntMUD - Simple MUD Example
+# Demonstrates the event system and game logic
+# ============================================
+
+classe main
+
+# Player data storage (indexed by session ID)
+int32 jogadores
+int32 salas
+
+# Room descriptions
+txt256 sala_descricao
+
+# Initialize game world
+func inicializar
+  jogadores = vetor(100)
+  salas = vetor(10)
+
+  # Create rooms
+  salas[0] = "Entrada do Castelo"
+  salas[1] = "Salao Principal"
+  salas[2] = "Cozinha"
+  salas[3] = "Torre Norte"
+  salas[4] = "Jardim"
+
+  escreva("{green}Mundo inicializado!{reset}")
+  ret 1
+
+# Called when a player connects
+# arg0 = session ID
+func aoconectar
+  int32 sessao
+  sessao = arg0
+
+  # Store player in room 0 (entrance)
+  jogadores[sessao] = 0
+
+  escrevaln("")
+  escrevaln("{cyan}=== Bem-vindo ao IntMUD! ==={reset}")
+  escrevaln("")
+  escrevaln("Voce esta na entrada de um antigo castelo.")
+  escrevaln("Digite {yellow}olhar{reset} para ver a sala.")
+  escrevaln("Digite {yellow}ajuda{reset} para ver os comandos.")
+  escrevaln("")
+
+  ret 1
+
+# Called when a player disconnects
+func aodesconectar
+  int32 sessao
+  sessao = arg0
+
+  # Clear player data
+  jogadores[sessao] = nulo
+
+  ret 1
+
+# Called when a player types a command
+# arg0 = session ID
+# arg1 = command
+# arg2 = arguments
+func aocomando
+  int32 sessao
+  txt256 comando
+  txt256 argumentos
+
+  sessao = arg0
+  comando = arg1
+  argumentos = arg2
+
+  # Handle game commands
+  se comando == "olhar"
+    chamar olhar(sessao)
+    ret 1
+  fimse
+
+  se comando == "ajuda"
+    chamar mostrar_ajuda()
+    ret 1
+  fimse
+
+  se comando == "norte"
+    chamar mover(sessao, "norte")
+    ret 1
+  fimse
+
+  se comando == "sul"
+    chamar mover(sessao, "sul")
+    ret 1
+  fimse
+
+  se comando == "leste"
+    chamar mover(sessao, "leste")
+    ret 1
+  fimse
+
+  se comando == "oeste"
+    chamar mover(sessao, "oeste")
+    ret 1
+  fimse
+
+  se comando == "inventario"
+    escrevaln("Seu inventario esta vazio.")
+    ret 1
+  fimse
+
+  # Return 0 to let the default handler process it
+  ret 0
+
+# Show room description
+func olhar
+  int32 sessao
+  int32 sala
+  txt256 nome
+
+  sessao = arg0
+  sala = jogadores[sessao]
+  nome = salas[sala]
+
+  escrevaln("")
+  escrevaln("{brightcyan}[ " + nome + " ]{reset}")
+  escrevaln("")
+
+  casovar sala
+    casose 0
+      escrevaln("Voce esta na entrada de um imponente castelo medieval.")
+      escrevaln("Portoes de ferro se erguem atras de voce.")
+      escrevaln("A {yellow}norte{reset} esta o Salao Principal.")
+      escrevaln("A {yellow}leste{reset} esta o Jardim.")
+    casose 1
+      escrevaln("O salao principal e enorme, com um teto alto e lustres de cristal.")
+      escrevaln("Tapeçarias antigas adornam as paredes.")
+      escrevaln("A {yellow}sul{reset} esta a Entrada.")
+      escrevaln("A {yellow}oeste{reset} esta a Cozinha.")
+      escrevaln("A {yellow}norte{reset} esta a Torre Norte.")
+    casose 2
+      escrevaln("Uma cozinha rustica com panelas de cobre penduradas.")
+      escrevaln("O cheiro de pao recente paira no ar.")
+      escrevaln("A {yellow}leste{reset} esta o Salao Principal.")
+    casose 3
+      escrevaln("O topo da torre oferece uma vista deslumbrante do reino.")
+      escrevaln("Voce pode ver florestas e montanhas ao longe.")
+      escrevaln("A {yellow}sul{reset} esta o Salao Principal.")
+    casose 4
+      escrevaln("Um belo jardim com fontes e flores coloridas.")
+      escrevaln("Passaros cantam nas arvores.")
+      escrevaln("A {yellow}oeste{reset} esta a Entrada.")
+  casofim
+
+  escrevaln("")
+  ret 1
+
+# Move player to a new room
+func mover
+  int32 sessao
+  txt256 direcao
+  int32 sala_atual
+  int32 nova_sala
+
+  sessao = arg0
+  direcao = arg1
+  sala_atual = jogadores[sessao]
+  nova_sala = -1
+
+  # Define exits based on current room
+  casovar sala_atual
+    casose 0
+      # Entrada
+      se direcao == "norte"
+        nova_sala = 1
+      fimse
+      se direcao == "leste"
+        nova_sala = 4
+      fimse
+    casose 1
+      # Salao
+      se direcao == "sul"
+        nova_sala = 0
+      fimse
+      se direcao == "oeste"
+        nova_sala = 2
+      fimse
+      se direcao == "norte"
+        nova_sala = 3
+      fimse
+    casose 2
+      # Cozinha
+      se direcao == "leste"
+        nova_sala = 1
+      fimse
+    casose 3
+      # Torre
+      se direcao == "sul"
+        nova_sala = 1
+      fimse
+    casose 4
+      # Jardim
+      se direcao == "oeste"
+        nova_sala = 0
+      fimse
+  casofim
+
+  se nova_sala == -1
+    escrevaln("{red}Voce nao pode ir nessa direcao.{reset}")
+    ret 0
+  fimse
+
+  # Move player
+  jogadores[sessao] = nova_sala
+  escrevaln("{green}Voce vai para " + direcao + ".{reset}")
+  escrevaln("")
+  chamar olhar(sessao)
+
+  ret 1
+
+# Show help message
+func mostrar_ajuda
+  escrevaln("")
+  escrevaln("{brightcyan}=== Comandos do Jogo ==={reset}")
+  escrevaln("")
+  escrevaln("  {yellow}olhar{reset}       - Ver a sala atual")
+  escrevaln("  {yellow}norte{reset}       - Ir para o norte")
+  escrevaln("  {yellow}sul{reset}         - Ir para o sul")
+  escrevaln("  {yellow}leste{reset}       - Ir para o leste")
+  escrevaln("  {yellow}oeste{reset}       - Ir para o oeste")
+  escrevaln("  {yellow}inventario{reset}  - Ver seu inventario")
+  escrevaln("  {yellow}ajuda{reset}       - Mostrar esta ajuda")
+  escrevaln("")
+  escrevaln("{dim}Comandos do servidor: help, who, say, quit{reset}")
+  escrevaln("")
+  ret 1

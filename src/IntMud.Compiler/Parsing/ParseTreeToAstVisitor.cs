@@ -360,9 +360,27 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     public override AstNode VisitCaseClause(IntMudParser.CaseClauseContext context)
     {
-        var label = context.STRING().GetText();
-        // Remove quotes
-        label = label[1..^1];
+        var caseValue = context.caseValue();
+        string label;
+
+        if (caseValue.STRING() != null)
+        {
+            label = caseValue.STRING().GetText();
+            // Remove quotes
+            label = label[1..^1];
+        }
+        else if (caseValue.DECIMAL_NUMBER() != null)
+        {
+            label = caseValue.DECIMAL_NUMBER().GetText();
+        }
+        else if (caseValue.HEX_NUMBER() != null)
+        {
+            label = caseValue.HEX_NUMBER().GetText();
+        }
+        else
+        {
+            throw new InvalidOperationException("Unknown case value type");
+        }
 
         var node = new CaseClauseNode { Label = label };
         SetLocation(node, context);

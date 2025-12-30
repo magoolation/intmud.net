@@ -24,6 +24,36 @@ public sealed class BytecodeInterpreter
     private const int MaxCallDepth = 40;
     private const int MaxLocals = 256;
 
+    /// <summary>
+    /// Delegate for writing output (escreva function).
+    /// </summary>
+    public Action<string>? WriteOutput { get; set; }
+
+    /// <summary>
+    /// Delegate for reading input (leia function).
+    /// </summary>
+    public Func<string>? ReadInput { get; set; }
+
+    /// <summary>
+    /// Buffer for captured output (for testing).
+    /// </summary>
+    private readonly List<string> _outputBuffer = new();
+
+    /// <summary>
+    /// Random number generator for math functions.
+    /// </summary>
+    private readonly Random _random = new();
+
+    /// <summary>
+    /// Get all output that was written.
+    /// </summary>
+    public IReadOnlyList<string> OutputBuffer => _outputBuffer;
+
+    /// <summary>
+    /// Clear the output buffer.
+    /// </summary>
+    public void ClearOutputBuffer() => _outputBuffer.Clear();
+
     public BytecodeInterpreter(BytecodeCompiledUnit unit, Dictionary<string, BytecodeCompiledUnit>? loadedUnits = null)
     {
         _unit = unit;
@@ -615,7 +645,17 @@ public sealed class BytecodeInterpreter
         // Try to find function in current unit
         if (_unit.Functions.TryGetValue(funcName, out var function))
         {
-            var result = ExecuteFunction(function, args);
+            // Propagate 'this' reference from current call frame if available
+            var currentFrame = _callStack.Count > 0 ? _callStack.Peek() : default;
+            RuntimeValue result;
+            if (currentFrame.ThisObject != null)
+            {
+                result = ExecuteFunctionWithThis(function, currentFrame.ThisObject, args);
+            }
+            else
+            {
+                result = ExecuteFunction(function, args);
+            }
             Push(result);
             return;
         }
@@ -684,6 +724,15 @@ public sealed class BytecodeInterpreter
             throw new RuntimeException("Call stack overflow");
         }
 
+        // Save caller's locals if this is a nested call
+        RuntimeValue[]? savedLocals = null;
+        int savedIp = _ip;
+        if (_callStack.Count > 0)
+        {
+            savedLocals = new RuntimeValue[MaxLocals];
+            Array.Copy(_locals, savedLocals, MaxLocals);
+        }
+
         var frame = new CallFrame
         {
             Function = function,
@@ -695,7 +744,7 @@ public sealed class BytecodeInterpreter
         };
         _callStack.Push(frame);
 
-        // Initialize locals
+        // Initialize locals for this function
         Array.Clear(_locals, 0, _locals.Length);
 
         // Execute bytecode
@@ -706,10 +755,25 @@ public sealed class BytecodeInterpreter
 
         try
         {
-            return ExecuteBytecodeLoop(bytecode, stringPool, arguments, frame);
+            var result = ExecuteBytecodeLoop(bytecode, stringPool, arguments, frame);
+
+            // Restore caller's locals and IP
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
+
+            return result;
         }
         catch
         {
+            // Restore caller's locals and IP on exception too
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
             if (_callStack.Count > 0) _callStack.Pop();
             throw;
         }
@@ -813,6 +877,20 @@ public sealed class BytecodeInterpreter
                         : RuntimeValue.Null);
                     break;
 
+                case BytecodeOp.LoadIndex:
+                    var index = Pop();
+                    var array = Pop();
+                    Push(LoadIndex(array, index));
+                    break;
+
+                case BytecodeOp.StoreIndex:
+                    // Stack order: [value, array, index] (index at top)
+                    index = Pop();
+                    array = Pop();
+                    value = Pop();
+                    StoreIndex(array, index, value);
+                    break;
+
                 // Arithmetic operations
                 case BytecodeOp.Add:
                     var b = Pop();
@@ -854,6 +932,41 @@ public sealed class BytecodeInterpreter
 
                 case BytecodeOp.Dec:
                     Push(Pop() - RuntimeValue.One);
+                    break;
+
+                // Bitwise operations
+                case BytecodeOp.BitAnd:
+                    b = Pop();
+                    a = Pop();
+                    Push(a & b);
+                    break;
+
+                case BytecodeOp.BitOr:
+                    b = Pop();
+                    a = Pop();
+                    Push(a | b);
+                    break;
+
+                case BytecodeOp.BitXor:
+                    b = Pop();
+                    a = Pop();
+                    Push(a ^ b);
+                    break;
+
+                case BytecodeOp.BitNot:
+                    Push(~Pop());
+                    break;
+
+                case BytecodeOp.Shl:
+                    b = Pop();
+                    a = Pop();
+                    Push(RuntimeValue.FromInt(a.AsInt() << (int)b.AsInt()));
+                    break;
+
+                case BytecodeOp.Shr:
+                    b = Pop();
+                    a = Pop();
+                    Push(RuntimeValue.FromInt(a.AsInt() >> (int)b.AsInt()));
                     break;
 
                 // Comparison operations
@@ -905,6 +1018,23 @@ public sealed class BytecodeInterpreter
                     Push(RuntimeValue.FromBool(!a.StrictEquals(b)));
                     break;
 
+                // Logical operations
+                case BytecodeOp.And:
+                    b = Pop();
+                    a = Pop();
+                    Push(RuntimeValue.FromBool(a.IsTruthy && b.IsTruthy));
+                    break;
+
+                case BytecodeOp.Or:
+                    b = Pop();
+                    a = Pop();
+                    Push(RuntimeValue.FromBool(a.IsTruthy || b.IsTruthy));
+                    break;
+
+                case BytecodeOp.Not:
+                    Push(RuntimeValue.FromBool(!Pop().IsTruthy));
+                    break;
+
                 // Control flow
                 case BytecodeOp.Jump:
                     var offset = ReadInt16(bytecode);
@@ -942,6 +1072,34 @@ public sealed class BytecodeInterpreter
                     var funcName = stringPool[ReadUInt16(bytecode)];
                     argCount = bytecode[_ip++];
                     ExecuteCall(funcName, argCount);
+                    break;
+
+                case BytecodeOp.CallBuiltin:
+                    var builtinId = ReadUInt16(bytecode);
+                    argCount = bytecode[_ip++];
+                    ExecuteBuiltinCall(builtinId, argCount);
+                    break;
+
+                case BytecodeOp.JumpIfNull:
+                    offset = ReadInt16(bytecode);
+                    if (Pop().IsNull) _ip += offset;
+                    break;
+
+                case BytecodeOp.JumpIfNotNull:
+                    offset = ReadInt16(bytecode);
+                    if (!Pop().IsNull) _ip += offset;
+                    break;
+
+                case BytecodeOp.Terminate:
+                    throw new TerminateException();
+
+                case BytecodeOp.Debug:
+                    // Debug breakpoint - no-op in production
+                    break;
+
+                case BytecodeOp.Line:
+                    // Line number marker for debugging - skip 2 bytes
+                    _ip += 2;
                     break;
 
                 default:
@@ -1021,10 +1179,489 @@ public sealed class BytecodeInterpreter
                 var size = args.Length > 0 ? (int)args[0].AsInt() : 0;
                 return RuntimeValue.CreateArray(size);
 
+            case "escreva":
+            case "escreve":
+            case "print":
+            case "echo":
+                return ExecuteEscreva(args);
+
+            case "escrevaln":
+            case "println":
+                return ExecuteEscrevaLn(args);
+
+            case "leia":
+            case "ler":
+            case "read":
+            case "input":
+                return ExecuteLeia();
+
+            // Math functions
+            case "intabs":
+            case "abs":
+                return RuntimeValue.FromInt(args.Length > 0 ? Math.Abs(args[0].AsInt()) : 0);
+
+            case "intmax":
+            case "max":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(Math.Max(args[0].AsInt(), args[1].AsInt()));
+                return args.Length > 0 ? RuntimeValue.FromInt(args[0].AsInt()) : RuntimeValue.Zero;
+
+            case "intmin":
+            case "min":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(Math.Min(args[0].AsInt(), args[1].AsInt()));
+                return args.Length > 0 ? RuntimeValue.FromInt(args[0].AsInt()) : RuntimeValue.Zero;
+
+            case "intdiv":
+            case "div":
+                if (args.Length >= 2 && args[1].AsInt() != 0)
+                    return RuntimeValue.FromInt(args[0].AsInt() / args[1].AsInt());
+                return RuntimeValue.Zero;
+
+            case "intmod":
+            case "mod":
+                if (args.Length >= 2 && args[1].AsInt() != 0)
+                    return RuntimeValue.FromInt(args[0].AsInt() % args[1].AsInt());
+                return RuntimeValue.Zero;
+
+            case "intmedia":
+            case "avg":
+                if (args.Length > 0)
+                {
+                    long sum = 0;
+                    foreach (var arg in args)
+                        sum += arg.AsInt();
+                    return RuntimeValue.FromInt(sum / args.Length);
+                }
+                return RuntimeValue.Zero;
+
+            case "intsoma":
+            case "sum":
+                {
+                    long sum = 0;
+                    foreach (var arg in args)
+                        sum += arg.AsInt();
+                    return RuntimeValue.FromInt(sum);
+                }
+
+            case "matsin":
+            case "sin":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Sin(args[0].AsDouble()) : 0.0);
+
+            case "matcos":
+            case "cos":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Cos(args[0].AsDouble()) : 1.0);
+
+            case "mattan":
+            case "tan":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Tan(args[0].AsDouble()) : 0.0);
+
+            case "matasin":
+            case "asin":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Asin(args[0].AsDouble()) : 0.0);
+
+            case "matacos":
+            case "acos":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Acos(args[0].AsDouble()) : Math.PI / 2);
+
+            case "matatan":
+            case "atan":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Atan(args[0].AsDouble()) : 0.0);
+
+            case "matatan2":
+            case "atan2":
+                return RuntimeValue.FromDouble(args.Length >= 2 ? Math.Atan2(args[0].AsDouble(), args[1].AsDouble()) : 0.0);
+
+            case "matsqrt":
+            case "sqrt":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Sqrt(args[0].AsDouble()) : 0.0);
+
+            case "matpow":
+            case "pow":
+                return RuntimeValue.FromDouble(args.Length >= 2 ? Math.Pow(args[0].AsDouble(), args[1].AsDouble()) : 0.0);
+
+            case "matlog":
+            case "log":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Log(args[0].AsDouble()) : 0.0);
+
+            case "matlog10":
+            case "log10":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Log10(args[0].AsDouble()) : 0.0);
+
+            case "matexp":
+            case "exp":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Exp(args[0].AsDouble()) : 1.0);
+
+            case "matfloor":
+            case "floor":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Floor(args[0].AsDouble()) : 0.0);
+
+            case "matceil":
+            case "ceil":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Ceiling(args[0].AsDouble()) : 0.0);
+
+            case "matround":
+            case "round":
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Round(args[0].AsDouble()) : 0.0);
+
+            case "matrand":
+            case "rand":
+            case "random":
+                return RuntimeValue.FromDouble(_random.NextDouble());
+
+            case "matrandint":
+            case "randint":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt(), (int)args[1].AsInt()));
+                if (args.Length == 1)
+                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt()));
+                return RuntimeValue.FromInt(_random.Next());
+
+            case "matpi":
+            case "pi":
+                return RuntimeValue.FromDouble(Math.PI);
+
+            case "mate":
+            case "e":
+                return RuntimeValue.FromDouble(Math.E);
+
+            // Text functions
+            case "txtlen":
+            case "len":
+            case "length":
+                return RuntimeValue.FromInt(args.Length > 0 ? args[0].AsString().Length : 0);
+
+            case "txtsub":
+            case "substr":
+            case "substring":
+                if (args.Length >= 3)
+                {
+                    var str = args[0].AsString();
+                    var start = (int)args[1].AsInt();
+                    var len = (int)args[2].AsInt();
+                    if (start < 0) start = 0;
+                    if (start >= str.Length) return RuntimeValue.FromString("");
+                    if (start + len > str.Length) len = str.Length - start;
+                    return RuntimeValue.FromString(str.Substring(start, len));
+                }
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var start = (int)args[1].AsInt();
+                    if (start < 0) start = 0;
+                    if (start >= str.Length) return RuntimeValue.FromString("");
+                    return RuntimeValue.FromString(str.Substring(start));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtmai":
+            case "upper":
+            case "toupper":
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().ToUpperInvariant() : "");
+
+            case "txtmin":
+            case "lower":
+            case "tolower":
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().ToLowerInvariant() : "");
+
+            case "txttrim":
+            case "trim":
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().Trim() : "");
+
+            case "txtltrim":
+            case "ltrim":
+            case "trimleft":
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().TrimStart() : "");
+
+            case "txtrtrim":
+            case "rtrim":
+            case "trimright":
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().TrimEnd() : "");
+
+            case "txtpos":
+            case "indexof":
+            case "pos":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(args[0].AsString().IndexOf(args[1].AsString(), StringComparison.Ordinal));
+                return RuntimeValue.FromInt(-1);
+
+            case "txtlastpos":
+            case "lastindexof":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(args[0].AsString().LastIndexOf(args[1].AsString(), StringComparison.Ordinal));
+                return RuntimeValue.FromInt(-1);
+
+            case "txtreplace":
+            case "replace":
+                if (args.Length >= 3)
+                    return RuntimeValue.FromString(args[0].AsString().Replace(args[1].AsString(), args[2].AsString()));
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtstartswith":
+            case "startswith":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(args[0].AsString().StartsWith(args[1].AsString(), StringComparison.Ordinal));
+                return RuntimeValue.False;
+
+            case "txtendswith":
+            case "endswith":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(args[0].AsString().EndsWith(args[1].AsString(), StringComparison.Ordinal));
+                return RuntimeValue.False;
+
+            case "txtcontains":
+            case "contains":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(args[0].AsString().Contains(args[1].AsString(), StringComparison.Ordinal));
+                return RuntimeValue.False;
+
+            case "txtconcat":
+            case "concat":
+                return RuntimeValue.FromString(string.Concat(args.Select(a => a.AsString())));
+
+            case "txtjoin":
+            case "join":
+                if (args.Length >= 2)
+                {
+                    var separator = args[0].AsString();
+                    return RuntimeValue.FromString(string.Join(separator, args.Skip(1).Select(a => a.AsString())));
+                }
+                return RuntimeValue.FromString(string.Concat(args.Select(a => a.AsString())));
+
+            case "txtsplit":
+            case "split":
+                if (args.Length >= 2)
+                {
+                    var parts = args[0].AsString().Split(args[1].AsString());
+                    var arr = RuntimeValue.CreateArray(parts.Length);
+                    for (int i = 0; i < parts.Length; i++)
+                        arr.SetIndex(i, RuntimeValue.FromString(parts[i]));
+                    return arr;
+                }
+                return RuntimeValue.CreateArray(0);
+
+            case "txtchar":
+            case "char":
+            case "chr":
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(((char)args[0].AsInt()).ToString());
+                return RuntimeValue.FromString("");
+
+            case "txtord":
+            case "ord":
+            case "asc":
+                if (args.Length > 0)
+                {
+                    var str = args[0].AsString();
+                    return RuntimeValue.FromInt(str.Length > 0 ? str[0] : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtrepeat":
+            case "repeat":
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var count = (int)args[1].AsInt();
+                    if (count <= 0) return RuntimeValue.FromString("");
+                    return RuntimeValue.FromString(string.Concat(Enumerable.Repeat(str, count)));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtreverse":
+            case "reverse":
+                if (args.Length > 0)
+                {
+                    var chars = args[0].AsString().ToCharArray();
+                    Array.Reverse(chars);
+                    return RuntimeValue.FromString(new string(chars));
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtpadleft":
+            case "padleft":
+            case "lpad":
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var totalWidth = (int)args[1].AsInt();
+                    var padChar = args.Length >= 3 && args[2].AsString().Length > 0 ? args[2].AsString()[0] : ' ';
+                    return RuntimeValue.FromString(str.PadLeft(totalWidth, padChar));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtpadright":
+            case "padright":
+            case "rpad":
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var totalWidth = (int)args[1].AsInt();
+                    var padChar = args.Length >= 3 && args[2].AsString().Length > 0 ? args[2].AsString()[0] : ' ';
+                    return RuntimeValue.FromString(str.PadRight(totalWidth, padChar));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            // Array functions
+            case "arrlen":
+            case "arrlength":
+            case "count":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array)
+                    return RuntimeValue.FromInt(args[0].Length);
+                return RuntimeValue.Zero;
+
+            case "arrpush":
+            case "push":
+            case "inserir":
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Array)
+                {
+                    args[0].ArrayPush(args[1]);
+                    return RuntimeValue.FromInt(args[0].Length);
+                }
+                return RuntimeValue.Zero;
+
+            case "arrpop":
+            case "pop":
+            case "remover":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array && args[0].Length > 0)
+                    return args[0].ArrayPop();
+                return RuntimeValue.Null;
+
+            case "arrshift":
+            case "shift":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array && args[0].Length > 0)
+                    return args[0].ArrayShift();
+                return RuntimeValue.Null;
+
+            case "arrunshift":
+            case "unshift":
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Array)
+                {
+                    args[0].ArrayUnshift(args[1]);
+                    return RuntimeValue.FromInt(args[0].Length);
+                }
+                return RuntimeValue.Zero;
+
+            case "arrindexof":
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Array)
+                {
+                    var arr = args[0];
+                    var searchVal = args[1];
+                    for (int i = 0; i < arr.Length; i++)
+                    {
+                        if (arr.GetIndex(i).Equals(searchVal))
+                            return RuntimeValue.FromInt(i);
+                    }
+                    return RuntimeValue.FromInt(-1);
+                }
+                return RuntimeValue.FromInt(-1);
+
+            case "arrcontains":
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Array)
+                {
+                    var arr = args[0];
+                    var searchVal = args[1];
+                    for (int i = 0; i < arr.Length; i++)
+                    {
+                        if (arr.GetIndex(i).Equals(searchVal))
+                            return RuntimeValue.True;
+                    }
+                    return RuntimeValue.False;
+                }
+                return RuntimeValue.False;
+
+            case "arrclear":
+            case "clear":
+            case "limpar":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array)
+                {
+                    args[0].ArrayClear();
+                    return RuntimeValue.Zero;
+                }
+                return RuntimeValue.Zero;
+
+            case "arrreverse":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array)
+                {
+                    args[0].ArrayReverse();
+                    return args[0];
+                }
+                return RuntimeValue.Null;
+
+            // Type checking functions
+            case "isnull":
+            case "enulo":
+                return RuntimeValue.FromBool(args.Length > 0 && args[0].IsNull);
+
+            case "isnum":
+            case "enumero":
+                return RuntimeValue.FromBool(args.Length > 0 && (args[0].Type == RuntimeValueType.Integer || args[0].Type == RuntimeValueType.Double));
+
+            case "istext":
+            case "etexto":
+                return RuntimeValue.FromBool(args.Length > 0 && args[0].Type == RuntimeValueType.String);
+
+            case "isarray":
+            case "evetor":
+                return RuntimeValue.FromBool(args.Length > 0 && args[0].Type == RuntimeValueType.Array);
+
+            case "isobject":
+            case "eobjeto":
+                return RuntimeValue.FromBool(args.Length > 0 && args[0].Type == RuntimeValueType.Object);
+
+            case "typeof":
+            case "tipode":
+                if (args.Length > 0)
+                {
+                    return RuntimeValue.FromString(args[0].Type switch
+                    {
+                        RuntimeValueType.Null => "null",
+                        RuntimeValueType.Integer => "int",
+                        RuntimeValueType.Double => "real",
+                        RuntimeValueType.String => "txt",
+                        RuntimeValueType.Array => "vetor",
+                        RuntimeValueType.Object => "objeto",
+                        RuntimeValueType.Boolean => "bool",
+                        _ => "desconhecido"
+                    });
+                }
+                return RuntimeValue.FromString("null");
+
             default:
                 // Unknown function - return null
                 return RuntimeValue.Null;
         }
+    }
+
+    /// <summary>
+    /// escreva(args...) - Write values to output without newline.
+    /// </summary>
+    private RuntimeValue ExecuteEscreva(RuntimeValue[] args)
+    {
+        var output = string.Join("", args.Select(a => a.AsString()));
+        _outputBuffer.Add(output);
+        WriteOutput?.Invoke(output);
+        return RuntimeValue.FromInt(output.Length);
+    }
+
+    /// <summary>
+    /// escrevaln(args...) - Write values to output with newline.
+    /// </summary>
+    private RuntimeValue ExecuteEscrevaLn(RuntimeValue[] args)
+    {
+        var output = string.Join("", args.Select(a => a.AsString()));
+        _outputBuffer.Add(output + Environment.NewLine);
+        WriteOutput?.Invoke(output + Environment.NewLine);
+        return RuntimeValue.FromInt(output.Length + Environment.NewLine.Length);
+    }
+
+    /// <summary>
+    /// leia() - Read a line of input.
+    /// </summary>
+    private RuntimeValue ExecuteLeia()
+    {
+        var input = ReadInput?.Invoke() ?? "";
+        return RuntimeValue.FromString(input);
     }
 
     private RuntimeValue CreateObject(string className, RuntimeValue[] arguments)

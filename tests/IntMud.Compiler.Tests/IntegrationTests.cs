@@ -1750,4 +1750,914 @@ func testar
         // o=3: skip=0, soma=1+3=4
         Assert.Equal(4, result.AsInt());
     }
+
+    #region I/O Tests
+
+    [Fact]
+    public void ParseCompileExecute_Escreva_OutputsText()
+    {
+        var source = @"
+classe teste
+
+func testar
+  escreva(""Hello"")
+  escreva("" "")
+  escreva(""World"")
+  ret 0
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var outputList = new List<string>();
+        interpreter.WriteOutput = s => outputList.Add(s);
+
+        interpreter.Execute("testar");
+
+        Assert.Equal(3, outputList.Count);
+        Assert.Equal("Hello", outputList[0]);
+        Assert.Equal(" ", outputList[1]);
+        Assert.Equal("World", outputList[2]);
+
+        // Also check the internal buffer
+        Assert.Equal(3, interpreter.OutputBuffer.Count);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_Escreva_MultipleArguments()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 x
+  x = 42
+  escreva(""Value: "", x, "" end"")
+  ret 0
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+
+        interpreter.Execute("testar");
+
+        Assert.Single(interpreter.OutputBuffer);
+        Assert.Equal("Value: 42 end", interpreter.OutputBuffer[0]);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_EscrevaLn_AddsNewline()
+    {
+        var source = @"
+classe teste
+
+func testar
+  escrevaln(""Line 1"")
+  escrevaln(""Line 2"")
+  ret 0
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+
+        interpreter.Execute("testar");
+
+        Assert.Equal(2, interpreter.OutputBuffer.Count);
+        Assert.EndsWith(Environment.NewLine, interpreter.OutputBuffer[0]);
+        Assert.EndsWith(Environment.NewLine, interpreter.OutputBuffer[1]);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_Escreva_ReturnsLength()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 len
+  len = escreva(""Hello"")
+  ret len
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(RuntimeValueType.Integer, result.Type);
+        Assert.Equal(5, result.AsInt()); // "Hello" has 5 characters
+    }
+
+    [Fact]
+    public void ParseCompileExecute_Leia_ReadsInput()
+    {
+        var source = @"
+classe teste
+
+func testar
+  txt256 nome
+  nome = leia()
+  ret nome
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        interpreter.ReadInput = () => "TestInput";
+
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(RuntimeValueType.String, result.Type);
+        Assert.Equal("TestInput", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_Leia_NoInputReturnsEmpty()
+    {
+        var source = @"
+classe teste
+
+func testar
+  txt256 input
+  input = leia()
+  ret input
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        // No ReadInput delegate set
+
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(RuntimeValueType.String, result.Type);
+        Assert.Equal("", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_IO_InteractiveLoop()
+    {
+        // Simulates a simple interactive loop
+        var source = @"
+classe teste
+
+func testar
+  txt256 input
+  int32 count
+
+  count = 0
+  input = leia()
+
+  enquanto input != ""sair""
+    escreva(""Voce digitou: "", input)
+    count = count + 1
+    input = leia()
+  efim
+
+  ret count
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var inputs = new Queue<string>(new[] { "hello", "world", "sair" });
+        var interpreter = new BytecodeInterpreter(unit);
+        interpreter.ReadInput = () => inputs.Count > 0 ? inputs.Dequeue() : "sair";
+
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(RuntimeValueType.Integer, result.Type);
+        Assert.Equal(2, result.AsInt()); // Processed "hello" and "world"
+        Assert.Equal(2, interpreter.OutputBuffer.Count);
+        Assert.Equal("Voce digitou: hello", interpreter.OutputBuffer[0]);
+        Assert.Equal("Voce digitou: world", interpreter.OutputBuffer[1]);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_Print_AliasWorks()
+    {
+        var source = @"
+classe teste
+
+func testar
+  print(""Using print"")
+  ret 0
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        interpreter.Execute("testar");
+
+        Assert.Single(interpreter.OutputBuffer);
+        Assert.Equal("Using print", interpreter.OutputBuffer[0]);
+    }
+
+    #endregion
+
+    #region Built-in Math Functions Tests
+
+    [Fact]
+    public void ParseCompileExecute_MathAbs_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret abs(-42)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(42, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathMax_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret max(10, 25)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(25, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathMin_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret min(10, 25)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(10, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathDiv_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret div(17, 5)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(3, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathMod_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret mod(17, 5)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(2, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathSqrt_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret sqrt(16)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(4.0, result.AsDouble(), 0.001);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathPow_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret pow(2, 10)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(1024.0, result.AsDouble(), 0.001);
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathSum_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret sum(1, 2, 3, 4, 5)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(15, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_MathPi_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret pi()
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(Math.PI, result.AsDouble(), 0.0001);
+    }
+
+    #endregion
+
+    #region Built-in Text Functions Tests
+
+    [Fact]
+    public void ParseCompileExecute_TextLen_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret len(""Hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(5, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextSubstr_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret substr(""Hello World"", 0, 5)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("Hello", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextUpper_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret upper(""hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("HELLO", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextLower_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret lower(""HELLO"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("hello", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextTrim_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret trim(""  hello  "")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("hello", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextIndexOf_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret indexof(""Hello World"", ""World"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(6, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextReplace_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret replace(""Hello World"", ""World"", ""IntMUD"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("Hello IntMUD", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextConcat_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret concat(""Hello"", "" "", ""World"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("Hello World", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextRepeat_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret repeat(""ab"", 3)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("ababab", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextReverse_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret reverse(""Hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("olleH", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextStartsWith_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret startswith(""Hello World"", ""Hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TextContains_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret contains(""Hello World"", ""lo Wo"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    #endregion
+
+    #region Built-in Array Functions Tests
+
+    [Fact]
+    public void ParseCompileExecute_ArrayPush_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  ret tam(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(3, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ArrayPop_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  ret pop(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(30, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ArrayShift_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  ret shift(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(10, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ArrayClear_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  clear(arr)
+  ret tam(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(0, result.AsInt());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ArrayContains_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  ret arrcontains(arr, 20)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ArrayIndexOf_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(0)
+  push(arr, 10)
+  push(arr, 20)
+  push(arr, 30)
+  ret arrindexof(arr, 20)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal(1, result.AsInt());
+    }
+
+    #endregion
+
+    #region Built-in Type Checking Functions Tests
+
+    [Fact]
+    public void ParseCompileExecute_IsNull_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret isnull(nulo)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_IsNum_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret isnum(42)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_IsText_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret istext(""hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_IsArray_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(3)
+  ret isarray(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.True(result.AsBool());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TypeOf_Int_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret typeof(42)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("int", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TypeOf_String_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  ret typeof(""hello"")
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("txt", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_TypeOf_Array_Works()
+    {
+        var source = @"
+classe teste
+
+func testar
+  int32 arr
+  arr = vetor(3)
+  ret typeof(arr)
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+        var result = interpreter.Execute("testar");
+
+        Assert.Equal("vetor", result.AsString());
+    }
+
+    #endregion
 }

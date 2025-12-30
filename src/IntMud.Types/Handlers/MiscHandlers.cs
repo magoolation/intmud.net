@@ -155,117 +155,6 @@ public sealed class IndiceItemHandler : VariableTypeHandlerBase
 }
 
 /// <summary>
-/// Handler for debug (debug info) variables.
-/// </summary>
-public sealed class DebugHandler : VariableTypeHandlerBase
-{
-    public override OpCode OpCode => OpCode.Debug;
-    public override string TypeName => "debug";
-    public override VariableType RuntimeType => VariableType.Object;
-
-    public override int GetSize(ReadOnlySpan<byte> instruction) => IntPtr.Size;
-
-    public override void Initialize(Span<byte> memory, ReadOnlySpan<byte> instruction)
-    {
-        var info = new DebugInfo();
-        var handle = GCHandle.Alloc(info);
-        RefHandler.SetPointer(memory, GCHandle.ToIntPtr(handle));
-    }
-
-    public override bool GetBool(ReadOnlySpan<byte> memory)
-    {
-        var info = GetDebugInfo(memory);
-        return info?.IsEnabled ?? false;
-    }
-
-    public override int GetInt(ReadOnlySpan<byte> memory)
-    {
-        var info = GetDebugInfo(memory);
-        return info?.Level ?? 0;
-    }
-
-    public override double GetDouble(ReadOnlySpan<byte> memory) => GetInt(memory);
-
-    public override string GetText(ReadOnlySpan<byte> memory)
-    {
-        var info = GetDebugInfo(memory);
-        return info?.LastMessage ?? "";
-    }
-
-    public override void SetInt(Span<byte> memory, int value)
-    {
-        var info = GetDebugInfo(memory);
-        if (info != null)
-            info.Level = value;
-    }
-
-    public override void SetDouble(Span<byte> memory, double value) => SetInt(memory, (int)value);
-    public override void SetText(Span<byte> memory, string value) { }
-
-    public override void Assign(Span<byte> dest, ReadOnlySpan<byte> source)
-    {
-        RefHandler.SetPointer(dest, RefHandler.GetPointer(source));
-    }
-
-    public override int Compare(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
-    {
-        return GetInt(left).CompareTo(GetInt(right));
-    }
-
-    public override bool Equals(ReadOnlySpan<byte> left, ReadOnlySpan<byte> right)
-    {
-        return RefHandler.GetPointer(left) == RefHandler.GetPointer(right);
-    }
-
-    private static DebugInfo? GetDebugInfo(ReadOnlySpan<byte> memory)
-    {
-        var ptr = RefHandler.GetPointer(memory);
-        if (ptr == IntPtr.Zero)
-            return null;
-        var handle = GCHandle.FromIntPtr(ptr);
-        return handle.Target as DebugInfo;
-    }
-
-    public override bool ExecuteFunction(Span<byte> memory, string functionName, IExecutionContext context)
-    {
-        var info = GetDebugInfo(memory);
-        if (info == null)
-            return false;
-
-        switch (functionName.ToLowerInvariant())
-        {
-            case "ativar":
-            case "enable":
-                info.IsEnabled = true;
-                return true;
-
-            case "desativar":
-            case "disable":
-                info.IsEnabled = false;
-                return true;
-
-            case "nivel":
-            case "level":
-                if (context.ArgumentCount > 0)
-                    info.Level = context.GetIntArgument(0);
-                else
-                    context.SetReturnInt(info.Level);
-                return true;
-
-            case "log":
-            case "print":
-                info.LastMessage = context.GetStringArgument(0);
-                if (info.IsEnabled)
-                    Console.WriteLine($"[DEBUG] {info.LastMessage}");
-                return true;
-
-            default:
-                return false;
-        }
-    }
-}
-
-/// <summary>
 /// Handler for prog (program info) variables.
 /// </summary>
 public sealed class ProgHandler : VariableTypeHandlerBase
@@ -484,13 +373,6 @@ public sealed class TelaTxtHandler : VariableTypeHandlerBase
 }
 
 // Helper classes
-
-public class DebugInfo
-{
-    public bool IsEnabled { get; set; }
-    public int Level { get; set; }
-    public string LastMessage { get; set; } = "";
-}
 
 public class ProgramInfo
 {
