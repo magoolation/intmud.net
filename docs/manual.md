@@ -116,6 +116,19 @@ func inicializar
 - Não podem começar com número
 - Não podem conter espaços ou caracteres especiais
 - São case-insensitive (maiúsculas = minúsculas)
+- Underscore e espaço são equivalentes em comparações (`bom_dia` = `bom dia`)
+
+### Palavras Reservadas
+
+O IntMUD aceita tanto a forma abreviada quanto a forma completa/acentuada:
+
+| Forma Original | Alternativa |
+|----------------|-------------|
+| `senao`        | `senão`     |
+| `func`         | `função`    |
+| `varfunc`      | `varfunção` |
+| `const`        | `constante` |
+| `ret`          | `retorne`   |
 
 ### Exemplo Completo
 
@@ -598,7 +611,7 @@ epara i = 0; i < 10; i = i + 1
 efim
 ```
 
-### Para Cada / Proximo
+### Para Cada / EFim
 
 ```intmud
 int32 lista
@@ -611,7 +624,7 @@ lista[2] = 30
 
 para cada item em lista
   escrevaln("Item: " + item)
-proximo
+efim
 ```
 
 ### CasoVar / CasoSe / CasoFim
@@ -780,7 +793,7 @@ func listar
   ref j
   para cada j em jogadores
     escrevaln(j.nome)
-  proximo
+  efim
   ret 1
 ```
 

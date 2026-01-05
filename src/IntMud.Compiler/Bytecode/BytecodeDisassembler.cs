@@ -222,6 +222,11 @@ public static class BytecodeDisassembler
                 case BytecodeOp.LoadThis:
                 case BytecodeOp.LoadIndex:
                 case BytecodeOp.StoreIndex:
+                case BytecodeOp.LoadFieldDynamic:
+                case BytecodeOp.StoreFieldDynamic:
+                case BytecodeOp.Concat:
+                case BytecodeOp.LoadDynamic:
+                case BytecodeOp.StoreDynamic:
                 case BytecodeOp.Add:
                 case BytecodeOp.Sub:
                 case BytecodeOp.Mul:

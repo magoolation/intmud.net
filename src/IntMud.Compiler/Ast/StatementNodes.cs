@@ -89,10 +89,19 @@ public class CaseClauseNode : AstNode
 }
 
 /// <summary>
-/// Return statement (ret [value]).
+/// Return statement (ret [value] or ret condition, value).
+/// When Condition is set, the return only executes if condition is true.
 /// </summary>
 public class ReturnStatementNode : StatementNode
 {
+    /// <summary>
+    /// Optional condition - if set, ret only executes when condition is true.
+    /// </summary>
+    public ExpressionNode? Condition { get; set; }
+
+    /// <summary>
+    /// The value to return.
+    /// </summary>
     public ExpressionNode? Value { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitReturnStatement(this);

@@ -1,4 +1,5 @@
 using IntMud.Compiler.Ast;
+using IntMud.Core.Text;
 
 namespace IntMud.Runtime.Execution;
 
@@ -14,8 +15,9 @@ public class CompiledProgram
 
     /// <summary>
     /// All classes defined in the program.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, CompiledClass> Classes { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, CompiledClass> Classes { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Source files that make up this program.
@@ -81,28 +83,33 @@ public class CompiledClass
 
     /// <summary>
     /// Class variables (not in functions).
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, CompiledVariable> Variables { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, CompiledVariable> Variables { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Functions defined in this class.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, CompiledFunction> Functions { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, CompiledFunction> Functions { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Constants defined in this class.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, CompiledConstant> Constants { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, CompiledConstant> Constants { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Common (static) variable values shared across all objects.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, Values.RuntimeValue> CommonVariables { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Values.RuntimeValue> CommonVariables { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Cached constant values.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, Values.RuntimeValue> CachedConstants { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Values.RuntimeValue> CachedConstants { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// All objects of this class.
@@ -349,8 +356,9 @@ public class RuntimeObject
 
     /// <summary>
     /// Instance variable values.
+    /// Uses IntMudNameComparer to match original behavior where underscore equals space.
     /// </summary>
-    public Dictionary<string, Values.RuntimeValue> Variables { get; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, Values.RuntimeValue> Variables { get; } = new(IntMudNameComparer.Instance);
 
     /// <summary>
     /// Whether this object is marked for deletion.

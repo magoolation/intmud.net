@@ -36,6 +36,13 @@ public enum BytecodeOp : byte
     // Array/Index Operations
     LoadIndex = 30,
     StoreIndex = 31,
+    LoadFieldDynamic = 32,  // field name is on stack (as string)
+    StoreFieldDynamic = 33, // field name and value on stack
+
+    // Dynamic Identifier Operations
+    Concat = 34,            // concatenate two strings on stack
+    LoadDynamic = 35,       // variable name on stack, resolves local/field/global
+    StoreDynamic = 36,      // variable name and value on stack
 
     // Arithmetic
     Add = 40,
@@ -244,6 +251,31 @@ public sealed class BytecodeEmitter
     // Array/Index
     public void EmitLoadIndex() => _writer.Write((byte)BytecodeOp.LoadIndex);
     public void EmitStoreIndex() => _writer.Write((byte)BytecodeOp.StoreIndex);
+
+    // Dynamic field access (field name on stack)
+    public void EmitLoadFieldDynamic() => _writer.Write((byte)BytecodeOp.LoadFieldDynamic);
+    public void EmitStoreFieldDynamic() => _writer.Write((byte)BytecodeOp.StoreFieldDynamic);
+
+    // Dynamic identifier operations
+    /// <summary>
+    /// Concatenate two strings on stack.
+    /// Stack: [str1, str2] -> [str1 + str2]
+    /// </summary>
+    public void EmitConcat() => _writer.Write((byte)BytecodeOp.Concat);
+
+    /// <summary>
+    /// Load a variable by dynamic name (name on stack).
+    /// Resolves in order: local -> instance field -> global.
+    /// Stack: [name] -> [value]
+    /// </summary>
+    public void EmitLoadDynamic() => _writer.Write((byte)BytecodeOp.LoadDynamic);
+
+    /// <summary>
+    /// Store a value to a variable by dynamic name (name and value on stack).
+    /// Resolves in order: local -> instance field -> global.
+    /// Stack: [name, value] -> []
+    /// </summary>
+    public void EmitStoreDynamic() => _writer.Write((byte)BytecodeOp.StoreDynamic);
 
     // Arithmetic
     public void EmitAdd() => _writer.Write((byte)BytecodeOp.Add);

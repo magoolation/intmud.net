@@ -67,6 +67,7 @@ public interface IAstVisitor<T>
     T VisitNullCoalesceExpression(NullCoalesceExpressionNode node);
     T VisitAssignmentExpression(AssignmentExpressionNode node);
     T VisitMemberAccess(MemberAccessNode node);
+    T VisitDynamicMemberAccess(DynamicMemberAccessNode node);
     T VisitIndexAccess(IndexAccessNode node);
     T VisitFunctionCall(FunctionCallNode node);
     T VisitPostfixIncrement(PostfixIncrementNode node);
@@ -77,6 +78,7 @@ public interface IAstVisitor<T>
     T VisitThisReference(ThisReferenceNode node);
     T VisitArgReference(ArgReferenceNode node);
     T VisitArgsReference(ArgsReferenceNode node);
+    T VisitDynamicIdentifier(DynamicIdentifierNode node);
     T VisitDollarReference(DollarReferenceNode node);
     T VisitClassReference(ClassReferenceNode node);
     T VisitNewExpression(NewExpressionNode node);

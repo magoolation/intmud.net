@@ -13,13 +13,17 @@ compilationUnit
     ;
 
 fileOption
-    : INCLUIR EQ STRING
+    : INCLUIR EQ (STRING | filePath)
     | EXEC EQ DECIMAL_NUMBER
     | TELATXT EQ DECIMAL_NUMBER
     | LOG EQ DECIMAL_NUMBER
     | ERR EQ DECIMAL_NUMBER
     | COMPLETO EQ DECIMAL_NUMBER
     | ARQEXEC EQ STRING
+    ;
+
+filePath
+    : (IDENTIFIER | SLASH)+ SLASH?   // path like adm/ or obj/config/
     ;
 
 // ============================================================================
@@ -120,11 +124,11 @@ varFuncDefinition
 // ============================================================================
 
 constantDefinition
-    : CONST identifier EQ expression
+    : CONST identifier EQ expression (COMMA expression)*
     ;
 
 varConstDefinition
-    : VARCONST identifier EQ expression
+    : VARCONST identifier EQ expression (COMMA expression)*
     ;
 
 // ============================================================================
@@ -147,7 +151,19 @@ statement
     ;
 
 refVarDeclaration
-    : REFVAR identifier EQ expression
+    : REFVAR extendedIdentifier EQ expression
+    ;
+
+// Extended identifier that allows FUNC as variable name (used in refvar and expressions)
+extendedIdentifier
+    : identifier
+    | FUNC
+    ;
+
+// Expression that can appear inside brackets, allowing FUNC as identifier
+bracketExpression
+    : expression
+    | FUNC       // FUNC used as variable name inside brackets
     ;
 
 // ============================================================================
@@ -179,11 +195,11 @@ foreachStatement
     ;
 
 switchStatement
-    : CASOVAR expression caseClause* defaultClause? CASOFIM
+    : CASOVAR expression caseClause* CASOFIM
     ;
 
 caseClause
-    : CASOSE caseValue statement*
+    : CASOSE caseValue? statement*   // caseValue is optional - without value it's a default case
     ;
 
 caseValue
@@ -192,12 +208,8 @@ caseValue
     | HEX_NUMBER
     ;
 
-defaultClause
-    : CASOSE statement*
-    ;
-
 returnStatement
-    : RET expression?
+    : RET (expression (COMMA expression)?)?
     ;
 
 exitStatement
@@ -229,8 +241,8 @@ expression
     ;
 
 assignmentExpression
-    : conditionalExpression
-    | leftHandSide assignmentOperator assignmentExpression
+    : leftHandSide assignmentOperator assignmentExpression
+    | conditionalExpression
     ;
 
 assignmentOperator
@@ -250,6 +262,7 @@ assignmentOperator
 conditionalExpression
     : nullCoalesceExpression
     | nullCoalesceExpression QUESTION expression? (COLON expression)?
+    | nullCoalesceExpression COLON expression  // Shortened: expr : default means expr ? expr : default
     ;
 
 nullCoalesceExpression
@@ -257,11 +270,11 @@ nullCoalesceExpression
     ;
 
 logicalOrExpression
-    : logicalAndExpression (OR logicalAndExpression)*
+    : logicalAndExpression (OR assignmentExpression)*
     ;
 
 logicalAndExpression
-    : bitwiseOrExpression (AND bitwiseOrExpression)*
+    : bitwiseOrExpression (AND assignmentExpression)*
     ;
 
 bitwiseOrExpression
@@ -305,17 +318,31 @@ unaryExpression
     | postfixExpression
     ;
 
+// Postfix expression: primary expression followed by postfixOps
 postfixExpression
     : primaryExpression postfixOp*
     ;
 
+// Postfix operations: member access, increment/decrement, function calls
+// Note: In IntMud, arr[expr] is NOT array access - it's dynamic name construction
+// Vector access uses dot notation: arr.0, arr.1, arr.[expr]
 postfixOp
     : PLUSPLUS
     | MINUSMINUS
-    | DOT identifier arguments?
-    | DOT DECIMAL_NUMBER
-    | LBRACKET expression RBRACKET
+    | DOT dynamicMemberName arguments?
+    | DOT DECIMAL_NUMBER                          // Vector element access: v.0, v.1
+    | DOT LBRACKET bracketExpression RBRACKET     // Dynamic vector access: v.[expr] or v.[func]
     | arguments
+    ;
+
+// Dynamic member name: supports patterns like:
+//   member, cmd_[arg1], cmd_[arg1]_suffix, [arg1], [arg1]_suffix, [x]_[y]
+// Key: identifiers can only follow brackets to avoid consuming separate tokens
+// Uses memberIdentifier to allow keywords like FUNC as member names
+// Optional @ suffix for countdown variables
+dynamicMemberName
+    : memberIdentifier (LBRACKET bracketExpression RBRACKET memberIdentifier?)* AT?
+    | LBRACKET bracketExpression RBRACKET (memberIdentifier (LBRACKET bracketExpression RBRACKET memberIdentifier?)*)? AT?
     ;
 
 primaryExpression
@@ -331,7 +358,17 @@ primaryExpression
     | dollarReference
     | newExpression
     | deleteExpression
-    | identifier
+    | dynamicIdentifierRef
+    ;
+
+// Dynamic identifier reference: supports dynamic name construction with brackets
+// Examples: x, x[y], x[y]_suffix, [expr], [expr]_suffix
+// In IntMud, [expr] makes expr part of the variable/function name
+// Example: x["1"] = 10 is the same as x1 = 10
+// Example: x[y] = 20 where y="_teste" is the same as x_teste = 20
+dynamicIdentifierRef
+    : identifier (LBRACKET bracketExpression RBRACKET identifier?)* AT?
+    | LBRACKET bracketExpression RBRACKET (identifier (LBRACKET bracketExpression RBRACKET identifier?)*)? AT?
     ;
 
 newExpression
@@ -351,11 +388,15 @@ leftHandSide
 // ============================================================================
 
 classReference
-    : identifier COLON identifier
+    : identifier COLON dynamicMemberName                           // config:modo or config:modo_[expr]
+    | identifier LBRACKET bracketExpression RBRACKET COLON dynamicMemberName  // t_[tipo]:nmin (dynamic class reference)
+    | LBRACKET bracketExpression RBRACKET COLON dynamicMemberName         // [expr]:member (fully dynamic class reference)
     ;
 
 dollarReference
-    : DOLLAR identifier
+    : DOLLAR identifier                                     // $jog
+    | DOLLAR LBRACKET bracketExpression RBRACKET            // $[expr] (dynamic global variable)
+    | DOLLAR identifier LBRACKET bracketExpression RBRACKET // $t_[tipo] (dynamic global with index)
     ;
 
 // ============================================================================
@@ -386,4 +427,24 @@ contextualKeyword
     | LOG
     | ERR
     | COMPLETO
+    | SERV       // Can be used as variable name
+    | PROG       // Can be used as variable name
+    | DEBUG      // Can be used as variable name
+    | SOCKET     // Can be used as variable name (e.g., "se socket")
+    | TXT        // txt1(), txt2() are built-in functions
+    | REF        // ref() is a built-in function
+    | APAGAR     // apagar() is a method name
+    | CLASSE     // classe can be used in expressions like .classe
+    | SAV        // sav can be used as identifier
+    | NOVO       // novo can be used as identifier
+    | ARG        // arg0-arg9 can be used as member name (e.g., contr.arg0)
+    | COMUM      // comum can be used as class name in class references (comum:member)
+    | PARA       // para can be used as function name (e.g., func para)
+    ;
+
+// Identifiers that can be used as member names (after .)
+memberIdentifier
+    : IDENTIFIER
+    | contextualKeyword
+    | FUNC       // func can be used as member name (e.g., arg0.func)
     ;

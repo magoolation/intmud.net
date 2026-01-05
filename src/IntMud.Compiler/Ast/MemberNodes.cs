@@ -37,12 +37,14 @@ public class FunctionDefinitionNode : AstNode
 }
 
 /// <summary>
-/// Constant definition (const name = value).
+/// Constant definition (const name = value, additional...).
 /// </summary>
 public class ConstantDefinitionNode : AstNode
 {
     public required string Name { get; init; }
     public required ExpressionNode Value { get; init; }
+    /// <summary>Additional expressions after the value (side effects).</summary>
+    public List<ExpressionNode> AdditionalExpressions { get; } = new();
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitConstantDefinition(this);
 }
@@ -65,6 +67,8 @@ public class VarConstDefinitionNode : AstNode
 {
     public required string Name { get; init; }
     public required ExpressionNode Value { get; init; }
+    /// <summary>Additional expressions after the value (side effects).</summary>
+    public List<ExpressionNode> AdditionalExpressions { get; } = new();
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitVarConstDefinition(this);
 }

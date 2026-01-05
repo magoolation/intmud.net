@@ -154,18 +154,34 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
     public override AstNode VisitConstantDefinition(IntMudParser.ConstantDefinitionContext context)
     {
         var name = GetIdentifier(context.identifier());
-        var value = VisitExpression(context.expression());
+        var expressions = context.expression();
+        var value = VisitExpression(expressions[0]);
         var node = new ConstantDefinitionNode { Name = name, Value = value };
         SetLocation(node, context);
+
+        // Additional expressions (side effects)
+        for (int i = 1; i < expressions.Length; i++)
+        {
+            node.AdditionalExpressions.Add(VisitExpression(expressions[i]));
+        }
+
         return node;
     }
 
     public override AstNode VisitVarConstDefinition(IntMudParser.VarConstDefinitionContext context)
     {
         var name = GetIdentifier(context.identifier());
-        var value = VisitExpression(context.expression());
+        var expressions = context.expression();
+        var value = VisitExpression(expressions[0]);
         var node = new VarConstDefinitionNode { Name = name, Value = value };
         SetLocation(node, context);
+
+        // Handle additional expressions (side effects)
+        for (int i = 1; i < expressions.Length; i++)
+        {
+            node.AdditionalExpressions.Add(VisitExpression(expressions[i]));
+        }
+
         return node;
     }
 
@@ -220,7 +236,7 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     public override AstNode VisitRefVarDeclaration(IntMudParser.RefVarDeclarationContext context)
     {
-        var name = GetIdentifier(context.identifier());
+        var name = GetExtendedIdentifier(context.extendedIdentifier());
         var value = VisitExpression(context.expression());
         var node = new RefVarDeclarationNode { Name = name, Value = value };
         SetLocation(node, context);
@@ -339,20 +355,15 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         foreach (var caseClause in context.caseClause())
         {
             var clause = (CaseClauseNode)Visit(caseClause);
-            node.Cases.Add(clause);
-        }
-
-        var defaultClause = context.defaultClause();
-        if (defaultClause != null)
-        {
-            var clause = new CaseClauseNode { Label = null };
-            foreach (var stmt in defaultClause.statement())
+            // If this is a default case (no label), store it separately
+            if (clause.Label == null)
             {
-                var stmtNode = VisitStatement(stmt);
-                if (stmtNode != null)
-                    clause.Body.Add(stmtNode);
+                node.DefaultCase = clause;
             }
-            node.DefaultCase = clause;
+            else
+            {
+                node.Cases.Add(clause);
+            }
         }
 
         return node;
@@ -361,25 +372,25 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
     public override AstNode VisitCaseClause(IntMudParser.CaseClauseContext context)
     {
         var caseValue = context.caseValue();
-        string label;
+        string? label = null;
 
-        if (caseValue.STRING() != null)
+        // caseValue is optional - if null, this is a default case
+        if (caseValue != null)
         {
-            label = caseValue.STRING().GetText();
-            // Remove quotes
-            label = label[1..^1];
-        }
-        else if (caseValue.DECIMAL_NUMBER() != null)
-        {
-            label = caseValue.DECIMAL_NUMBER().GetText();
-        }
-        else if (caseValue.HEX_NUMBER() != null)
-        {
-            label = caseValue.HEX_NUMBER().GetText();
-        }
-        else
-        {
-            throw new InvalidOperationException("Unknown case value type");
+            if (caseValue.STRING() != null)
+            {
+                label = caseValue.STRING().GetText();
+                // Remove quotes
+                label = label[1..^1];
+            }
+            else if (caseValue.DECIMAL_NUMBER() != null)
+            {
+                label = caseValue.DECIMAL_NUMBER().GetText();
+            }
+            else if (caseValue.HEX_NUMBER() != null)
+            {
+                label = caseValue.HEX_NUMBER().GetText();
+            }
         }
 
         var node = new CaseClauseNode { Label = label };
@@ -400,9 +411,21 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         var node = new ReturnStatementNode();
         SetLocation(node, context);
 
-        var expr = context.expression();
-        if (expr != null)
-            node.Value = VisitExpression(expr);
+        var expressions = context.expression();
+        if (expressions != null && expressions.Length > 0)
+        {
+            if (expressions.Length == 2)
+            {
+                // ret condition, value - returns value only if condition is true
+                node.Condition = VisitExpression(expressions[0]);
+                node.Value = VisitExpression(expressions[1]);
+            }
+            else
+            {
+                // ret value - unconditional return
+                node.Value = VisitExpression(expressions[0]);
+            }
+        }
 
         return node;
     }
@@ -481,17 +504,28 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
     {
         var nullCoalesce = VisitNullCoalesceExpression(context.nullCoalesceExpression());
 
-        if (context.QUESTION() == null)
+        if (context.QUESTION() == null && context.COLON() == null)
             return nullCoalesce;
 
         var node = new ConditionalExpressionNode { Condition = nullCoalesce };
         SetLocation(node, context);
 
         var expressions = context.expression();
-        if (expressions.Length > 0)
-            node.ThenValue = VisitExpression(expressions[0]);
-        if (expressions.Length > 1)
-            node.ElseValue = VisitExpression(expressions[1]);
+        if (context.QUESTION() != null)
+        {
+            // Full ternary: expr ? then : else
+            if (expressions.Length > 0)
+                node.ThenValue = VisitExpression(expressions[0]);
+            if (expressions.Length > 1)
+                node.ElseValue = VisitExpression(expressions[1]);
+        }
+        else
+        {
+            // Shortened ternary: expr : default means expr ? expr : default
+            node.ThenValue = nullCoalesce; // Same as condition
+            if (expressions.Length > 0)
+                node.ElseValue = VisitExpression(expressions[0]);
+        }
 
         return node;
     }
@@ -513,12 +547,13 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     private ExpressionNode VisitLogicalOrExpression(IntMudParser.LogicalOrExpressionContext context)
     {
-        var logicalAnds = context.logicalAndExpression();
-        var result = VisitLogicalAndExpression(logicalAnds[0]);
+        var logicalAnd = context.logicalAndExpression();
+        var assignmentExprs = context.assignmentExpression();
+        var result = VisitLogicalAndExpression(logicalAnd);
 
-        for (int i = 1; i < logicalAnds.Length; i++)
+        for (int i = 0; i < assignmentExprs.Length; i++)
         {
-            var right = VisitLogicalAndExpression(logicalAnds[i]);
+            var right = VisitAssignmentExpression(assignmentExprs[i]);
             result = new BinaryExpressionNode
             {
                 Left = result,
@@ -533,12 +568,13 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     private ExpressionNode VisitLogicalAndExpression(IntMudParser.LogicalAndExpressionContext context)
     {
-        var bitwiseOrs = context.bitwiseOrExpression();
-        var result = VisitBitwiseOrExpression(bitwiseOrs[0]);
+        var bitwiseOr = context.bitwiseOrExpression();
+        var assignmentExprs = context.assignmentExpression();
+        var result = VisitBitwiseOrExpression(bitwiseOr);
 
-        for (int i = 1; i < bitwiseOrs.Length; i++)
+        for (int i = 0; i < assignmentExprs.Length; i++)
         {
-            var right = VisitBitwiseOrExpression(bitwiseOrs[i]);
+            var right = VisitAssignmentExpression(assignmentExprs[i]);
             result = new BinaryExpressionNode
             {
                 Left = result,
@@ -823,8 +859,10 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     private ExpressionNode VisitPostfixExpression(IntMudParser.PostfixExpressionContext context)
     {
+        // Regular primary expression followed by postfixOps
         var result = VisitPrimaryExpression(context.primaryExpression());
 
+        // Apply postfixOp (including array access)
         foreach (var postfix in context.postfixOp())
         {
             result = ApplyPostfixOp(result, postfix);
@@ -851,12 +889,19 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
         if (context.DOT() != null)
         {
-            var identifier = context.identifier();
-            if (identifier != null)
+            // Check for dynamic array access: arr.[expr]
+            if (context.LBRACKET() != null)
             {
-                var memberName = GetIdentifier(identifier);
-                ExpressionNode member = new MemberAccessNode { Object = expr, Member = memberName };
-                SetLocation(member, context);
+                var indexExpr = VisitBracketExpression(context.bracketExpression());
+                var node = new IndexAccessNode { Object = expr, Index = indexExpr };
+                SetLocation(node, context);
+                return node;
+            }
+
+            var dynamicMember = context.dynamicMemberName();
+            if (dynamicMember != null)
+            {
+                var member = BuildMemberAccess(expr, dynamicMember, context);
 
                 // Check for function call
                 var args = context.arguments();
@@ -896,14 +941,6 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
             }
         }
 
-        if (context.LBRACKET() != null)
-        {
-            var indexExpr = VisitExpression(context.expression());
-            var node = new IndexAccessNode { Object = expr, Index = indexExpr };
-            SetLocation(node, context);
-            return node;
-        }
-
         if (context.arguments() != null)
         {
             var call = new FunctionCallNode { Function = expr };
@@ -921,6 +958,67 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         }
 
         throw new InvalidOperationException("Unknown postfix operator");
+    }
+
+    /// <summary>
+    /// Builds a member access node from a dynamicMemberName context.
+    /// Handles both simple member access (obj.member) and dynamic member names (obj.prefix_[expr]_suffix).
+    /// </summary>
+    private ExpressionNode BuildMemberAccess(ExpressionNode obj, IntMudParser.DynamicMemberNameContext context, Antlr4.Runtime.ParserRuleContext parentContext)
+    {
+        var memberIdentifiers = context.memberIdentifier();
+        var bracketExpressions = context.bracketExpression();
+        var isCountdown = context.AT() != null;
+
+        // Simple case: single identifier with no dynamic parts
+        if (memberIdentifiers.Length == 1 && bracketExpressions.Length == 0)
+        {
+            var memberName = GetMemberIdentifier(memberIdentifiers[0]);
+            var node = new MemberAccessNode { Object = obj, Member = memberName, IsCountdown = isCountdown };
+            SetLocation(node, parentContext);
+            return node;
+        }
+
+        // Dynamic case: build member name from identifiers and expressions
+        var dynamicNode = new DynamicMemberAccessNode { Object = obj, IsCountdown = isCountdown };
+        SetLocation(dynamicNode, parentContext);
+
+        // Process all children in order to maintain the correct sequence
+        // The grammar is: memberIdentifier (LBRACKET bracketExpression RBRACKET memberIdentifier?)*
+        //             or: LBRACKET bracketExpression RBRACKET (memberIdentifier (LBRACKET bracketExpression RBRACKET memberIdentifier?)*)?
+        int idxId = 0;
+        int idxExpr = 0;
+
+        foreach (var child in context.children)
+        {
+            if (child is IntMudParser.MemberIdentifierContext)
+            {
+                if (idxId < memberIdentifiers.Length)
+                {
+                    dynamicNode.MemberParts.Add(new StringLiteralNode { Value = GetMemberIdentifier(memberIdentifiers[idxId++]) });
+                }
+            }
+            else if (child is IntMudParser.BracketExpressionContext)
+            {
+                if (idxExpr < bracketExpressions.Length)
+                {
+                    dynamicNode.MemberParts.Add(VisitBracketExpression(bracketExpressions[idxExpr++]));
+                }
+            }
+            // Skip LBRACKET, RBRACKET, and AT tokens
+        }
+
+        return dynamicNode;
+    }
+
+    private static string GetMemberIdentifier(IntMudParser.MemberIdentifierContext context)
+    {
+        // memberIdentifier can be IDENTIFIER or contextualKeyword (which now includes FUNC)
+        if (context.IDENTIFIER() != null)
+            return context.IDENTIFIER().GetText();
+        if (context.contextualKeyword() != null)
+            return context.contextualKeyword().GetText();
+        return context.GetText();
     }
 
     private ExpressionNode VisitPrimaryExpression(IntMudParser.PrimaryExpressionContext context)
@@ -1004,9 +1102,60 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         if (context.classReference() != null)
         {
             var classRef = context.classReference();
-            var className = GetIdentifier(classRef.identifier()[0]);
-            var memberName = GetIdentifier(classRef.identifier()[1]);
-            var node = new ClassReferenceNode { ClassName = className, MemberName = memberName };
+            var classIdentifier = classRef.identifier();
+            var dynamicMember = classRef.dynamicMemberName();
+
+            ClassReferenceNode node;
+            if (classIdentifier == null)
+            {
+                // Fully dynamic class: [expr]:member
+                var indexExpr = VisitBracketExpression(classRef.bracketExpression());
+                node = new ClassReferenceNode { ClassNameIndex = indexExpr };
+            }
+            else if (classRef.LBRACKET() != null)
+            {
+                // Dynamic class: name[expr]:member
+                var className = GetIdentifier(classIdentifier);
+                var indexExpr = VisitBracketExpression(classRef.bracketExpression());
+                node = new ClassReferenceNode { ClassName = className, ClassNameIndex = indexExpr };
+            }
+            else
+            {
+                // Static class: classname:member
+                var className = GetIdentifier(classIdentifier);
+                node = new ClassReferenceNode { ClassName = className };
+            }
+
+            // Handle the member name (static or dynamic)
+            var memberIds = dynamicMember.memberIdentifier();
+            var memberExpressions = dynamicMember.bracketExpression();
+            node.IsCountdown = dynamicMember.AT() != null;
+
+            if (memberIds.Length == 1 && memberExpressions.Length == 0)
+            {
+                // Simple static member
+                node.MemberName = GetMemberIdentifier(memberIds[0]);
+            }
+            else
+            {
+                // Dynamic member: prefix_[expr]_suffix or [expr] etc.
+                // Process children in order to maintain sequence
+                int idxId = 0;
+                int idxExpr = 0;
+
+                foreach (var child in dynamicMember.children)
+                {
+                    if (child is IntMudParser.MemberIdentifierContext && idxId < memberIds.Length)
+                    {
+                        node.DynamicMemberParts.Add(new StringLiteralNode { Value = GetMemberIdentifier(memberIds[idxId++]) });
+                    }
+                    else if (child is IntMudParser.BracketExpressionContext && idxExpr < memberExpressions.Length)
+                    {
+                        node.DynamicMemberParts.Add(VisitBracketExpression(memberExpressions[idxExpr++]));
+                    }
+                }
+            }
+
             SetLocation(node, context);
             return node;
         }
@@ -1014,8 +1163,29 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         if (context.dollarReference() != null)
         {
             var dollarRef = context.dollarReference();
-            var className = GetIdentifier(dollarRef.identifier());
-            var node = new DollarReferenceNode { ClassName = className };
+            var identifier = dollarRef.identifier();
+            var bracketExpr = dollarRef.bracketExpression();
+
+            DollarReferenceNode node;
+            if (identifier != null && bracketExpr != null)
+            {
+                // $name[expr] - dynamic with base name
+                var baseName = GetIdentifier(identifier);
+                var indexExpr = VisitBracketExpression(bracketExpr);
+                node = new DollarReferenceNode { ClassName = baseName, DynamicExpression = indexExpr };
+            }
+            else if (bracketExpr != null)
+            {
+                // $[expr] - fully dynamic
+                var indexExpr = VisitBracketExpression(bracketExpr);
+                node = new DollarReferenceNode { DynamicExpression = indexExpr };
+            }
+            else
+            {
+                // $name - static
+                var className = GetIdentifier(identifier!);
+                node = new DollarReferenceNode { ClassName = className };
+            }
             SetLocation(node, context);
             return node;
         }
@@ -1052,12 +1222,9 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
             return node;
         }
 
-        if (context.identifier() != null)
+        if (context.dynamicIdentifierRef() != null)
         {
-            var name = GetIdentifier(context.identifier());
-            var node = new IdentifierNode { Name = name };
-            SetLocation(node, context);
-            return node;
+            return VisitDynamicIdentifierRef(context.dynamicIdentifierRef());
         }
 
         throw new InvalidOperationException("Unknown primary expression");
@@ -1070,6 +1237,73 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         if (context.contextualKeyword() != null)
             return context.contextualKeyword().GetText();
         throw new InvalidOperationException("Invalid identifier");
+    }
+
+    private static string GetExtendedIdentifier(IntMudParser.ExtendedIdentifierContext context)
+    {
+        if (context.identifier() != null)
+            return GetIdentifier(context.identifier());
+        if (context.FUNC() != null)
+            return context.FUNC().GetText();
+        throw new InvalidOperationException("Invalid extended identifier");
+    }
+
+    private ExpressionNode VisitBracketExpression(IntMudParser.BracketExpressionContext context)
+    {
+        if (context.expression() != null)
+            return VisitExpression(context.expression());
+        if (context.FUNC() != null)
+        {
+            // FUNC used as variable name inside brackets
+            var node = new IdentifierNode { Name = context.FUNC().GetText() };
+            SetLocation(node, context);
+            return node;
+        }
+        throw new InvalidOperationException("Invalid bracket expression");
+    }
+
+    /// <summary>
+    /// Visits a dynamicIdentifierRef context and returns the appropriate AST node.
+    /// For simple identifiers, returns IdentifierNode.
+    /// For dynamic patterns (x[y], [expr], etc.), returns DynamicIdentifierNode.
+    /// </summary>
+    private ExpressionNode VisitDynamicIdentifierRef(IntMudParser.DynamicIdentifierRefContext context)
+    {
+        var identifiers = context.identifier();
+        var bracketExpressions = context.bracketExpression();
+        var isCountdown = context.AT() != null;
+
+        // Simple case: just an identifier without any dynamic parts
+        if (identifiers.Length == 1 && bracketExpressions.Length == 0 && !isCountdown)
+        {
+            var name = GetIdentifier(identifiers[0]);
+            var node = new IdentifierNode { Name = name };
+            SetLocation(node, context);
+            return node;
+        }
+
+        // Dynamic case: identifier with brackets or just brackets [expr]
+        var dynamicNode = new DynamicIdentifierNode { IsCountdown = isCountdown };
+        SetLocation(dynamicNode, context);
+
+        // Process children in order to maintain the correct sequence
+        int idxId = 0;
+        int idxExpr = 0;
+
+        foreach (var child in context.children)
+        {
+            if (child is IntMudParser.IdentifierContext && idxId < identifiers.Length)
+            {
+                var name = GetIdentifier(identifiers[idxId++]);
+                dynamicNode.Parts.Add(new StringLiteralNode { Value = name });
+            }
+            else if (child is IntMudParser.BracketExpressionContext && idxExpr < bracketExpressions.Length)
+            {
+                dynamicNode.Parts.Add(VisitBracketExpression(bracketExpressions[idxExpr++]));
+            }
+        }
+
+        return dynamicNode;
     }
 
     private static AssignmentOperator GetAssignmentOperator(IntMudParser.AssignmentOperatorContext context)

@@ -1,3 +1,5 @@
+using IntMud.Core.Text;
+
 namespace IntMud.Compiler.Bytecode;
 
 /// <summary>
@@ -28,9 +30,9 @@ public sealed class LocalVariableInfo
 public sealed class CompilerScope
 {
     private readonly CompilerScope? _parent;
-    private readonly Dictionary<string, int> _locals = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, int> _globals = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _constants = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, int> _locals = new(IntMudNameComparer.Instance);
+    private readonly Dictionary<string, int> _globals = new(IntMudNameComparer.Instance);
+    private readonly HashSet<string> _constants = new(IntMudNameComparer.Instance);
     private readonly List<LocalVariableInfo> _localVariables = new();
     private int _nextLocalIndex;
 

@@ -2,9 +2,10 @@ lexer grammar IntMudLexer;
 
 // ============================================================================
 // Keywords - Control Flow
+// Accepts both accented and non-accented forms for Portuguese compatibility
 // ============================================================================
 SE          : 'se';
-SENAO       : 'senao';
+SENAO       : 'senao' | 'sen\u00E3o';  // senão
 FIMSE       : 'fimse';
 ENQUANTO    : 'enquanto';
 EPARA       : 'epara';
@@ -15,20 +16,21 @@ EFIM        : 'efim';
 CASOVAR     : 'casovar';
 CASOSE      : 'casose';
 CASOFIM     : 'casofim';
-RET         : 'ret';
+RET         : 'ret' | 'retorne';  // Alternative: retorne
 SAIR        : 'sair';
 CONTINUAR   : 'continuar';
 TERMINAR    : 'terminar';
 
 // ============================================================================
 // Keywords - Class/Function Definition
+// Accepts both abbreviated and full forms for better readability
 // ============================================================================
 CLASSE      : 'classe';
 HERDA       : 'herda';
-FUNC        : 'func';
-VARFUNC     : 'varfunc';
+FUNC        : 'func' | 'fun\u00E7\u00E3o';  // função
+VARFUNC     : 'varfunc' | 'varfun\u00E7\u00E3o';  // varfunção
 VARCONST    : 'varconst';
-CONST       : 'const';
+CONST       : 'const' | 'constante';  // Alternative: constante
 
 // ============================================================================
 // Keywords - Modifiers
@@ -184,21 +186,26 @@ BACKSLASH   : '\\';
 // ============================================================================
 // Literals
 // ============================================================================
+// Note: Negative numbers are handled by unary minus in the parser, not here
 HEX_NUMBER
-    : '-'? '0' [xX] [0-9a-fA-F]+
+    : '0' [xX] [0-9a-fA-F]+
     ;
 
 DECIMAL_NUMBER
-    : '-'? [0-9]+ ('.' [0-9]+)?
+    : [0-9]+ ('.' [0-9]+)?
     ;
 
 STRING
-    : '"' ( ESCAPE_SEQUENCE | ~["\\\r\n] )* '"'
+    : '"' ( ESCAPE_SEQUENCE | STRING_LINE_CONTINUATION | ~["\\\r\n] )* '"'
     ;
 
 fragment ESCAPE_SEQUENCE
     : '\\' [nbcd\\"']
     | '\\' [0-9a-fA-F]  // color codes
+    ;
+
+fragment STRING_LINE_CONTINUATION
+    : '\\' ('\r'? '\n' | '\r')  // backslash at end of line continues string
     ;
 
 // ============================================================================

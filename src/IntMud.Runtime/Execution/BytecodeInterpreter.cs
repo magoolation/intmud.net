@@ -204,6 +204,21 @@ public sealed class BytecodeInterpreter
                         StoreField(obj, fieldName, value);
                         break;
 
+                    case BytecodeOp.LoadFieldDynamic:
+                        // Field name is on stack as string
+                        var dynamicFieldName = Pop().AsString();
+                        obj = Pop();
+                        Push(LoadField(obj, dynamicFieldName));
+                        break;
+
+                    case BytecodeOp.StoreFieldDynamic:
+                        // Stack: [value, object, fieldName] (fieldName at top)
+                        dynamicFieldName = Pop().AsString();
+                        obj = Pop();
+                        value = Pop();
+                        StoreField(obj, dynamicFieldName, value);
+                        break;
+
                     case BytecodeOp.LoadArg:
                         var argIdx = bytecode[_ip++];
                         Push(argIdx < arguments.Length ? arguments[argIdx] : RuntimeValue.Null);
@@ -233,6 +248,29 @@ public sealed class BytecodeInterpreter
                         array = Pop();
                         value = Pop();
                         StoreIndex(array, index, value);
+                        break;
+
+                    // Dynamic identifier operations
+                    case BytecodeOp.Concat:
+                        // Concatenate two strings on stack
+                        var str2 = Pop().AsString();
+                        var str1 = Pop().AsString();
+                        Push(RuntimeValue.FromString(str1 + str2));
+                        break;
+
+                    case BytecodeOp.LoadDynamic:
+                        // Load variable by dynamic name (name on stack)
+                        // Resolves: local -> instance field -> global
+                        var varName = Pop().AsString();
+                        Push(LoadDynamicVariable(varName));
+                        break;
+
+                    case BytecodeOp.StoreDynamic:
+                        // Store to variable by dynamic name
+                        // Stack: [name, value] (value at top)
+                        value = Pop();
+                        varName = Pop().AsString();
+                        StoreDynamicVariable(varName, value);
                         break;
 
                     // Arithmetic
@@ -564,6 +602,23 @@ public sealed class BytecodeInterpreter
             return runtimeObj.GetField(fieldName);
         }
 
+        // Handle array element access with numeric field names (arr.0, arr.[i])
+        if (obj.Type == RuntimeValueType.Array && int.TryParse(fieldName, out var index))
+        {
+            return obj.GetIndex(index);
+        }
+
+        // Handle string character access with numeric field names (s.0, s.[i])
+        if (obj.Type == RuntimeValueType.String && int.TryParse(fieldName, out index))
+        {
+            var str = obj.AsString();
+            if (index >= 0 && index < str.Length)
+            {
+                return RuntimeValue.FromString(str[index].ToString());
+            }
+            return RuntimeValue.Null;
+        }
+
         // Handle special built-in properties
         return fieldName.ToLowerInvariant() switch
         {
@@ -585,7 +640,72 @@ public sealed class BytecodeInterpreter
         if (obj.Type == RuntimeValueType.Object && obj.AsObject() is BytecodeRuntimeObject runtimeObj)
         {
             runtimeObj.SetField(fieldName, value);
+            return;
         }
+
+        // Handle array element assignment with numeric field names (arr.0 = x, arr.[i] = x)
+        if (obj.Type == RuntimeValueType.Array && int.TryParse(fieldName, out var index))
+        {
+            obj.SetIndex(index, value);
+        }
+    }
+
+    /// <summary>
+    /// Load a variable by dynamic name. Resolves in order:
+    /// 1. Instance field (on current 'this' object)
+    /// 2. Global variable
+    /// </summary>
+    private RuntimeValue LoadDynamicVariable(string varName)
+    {
+        // First, try to load from current 'this' object's fields
+        if (_callStack.Count > 0)
+        {
+            var frame = _callStack.Peek();
+            if (frame.ThisObject is BytecodeRuntimeObject thisObj)
+            {
+                // Check if the field exists on this object
+                var fieldValue = thisObj.GetField(varName);
+                if (fieldValue.Type != RuntimeValueType.Null || thisObj.HasField(varName))
+                {
+                    return fieldValue;
+                }
+            }
+        }
+
+        // Fall back to global variables
+        if (_globals.TryGetValue(varName, out var globalValue))
+        {
+            return globalValue;
+        }
+
+        // Variable not found - return null
+        return RuntimeValue.Null;
+    }
+
+    /// <summary>
+    /// Store to a variable by dynamic name. Resolves in order:
+    /// 1. Instance field (on current 'this' object)
+    /// 2. Global variable
+    /// </summary>
+    private void StoreDynamicVariable(string varName, RuntimeValue value)
+    {
+        // First, try to store to current 'this' object's fields
+        if (_callStack.Count > 0)
+        {
+            var frame = _callStack.Peek();
+            if (frame.ThisObject is BytecodeRuntimeObject thisObj)
+            {
+                // Check if the field exists on this object
+                if (thisObj.HasField(varName))
+                {
+                    thisObj.SetField(varName, value);
+                    return;
+                }
+            }
+        }
+
+        // Fall back to global variables
+        _globals[varName] = value;
     }
 
     private RuntimeValue LoadIndex(RuntimeValue container, RuntimeValue index)
@@ -862,6 +982,21 @@ public sealed class BytecodeInterpreter
                     StoreField(obj, fieldName, value);
                     break;
 
+                case BytecodeOp.LoadFieldDynamic:
+                    // Field name is on stack as string
+                    var dynamicFieldName = Pop().AsString();
+                    obj = Pop();
+                    Push(LoadField(obj, dynamicFieldName));
+                    break;
+
+                case BytecodeOp.StoreFieldDynamic:
+                    // Stack: [value, object, fieldName] (fieldName at top)
+                    dynamicFieldName = Pop().AsString();
+                    obj = Pop();
+                    value = Pop();
+                    StoreField(obj, dynamicFieldName, value);
+                    break;
+
                 case BytecodeOp.LoadArg:
                     var argIdx = bytecode[_ip++];
                     Push(argIdx < arguments.Length ? arguments[argIdx] : RuntimeValue.Null);
@@ -889,6 +1024,28 @@ public sealed class BytecodeInterpreter
                     array = Pop();
                     value = Pop();
                     StoreIndex(array, index, value);
+                    break;
+
+                // Dynamic identifier operations
+                case BytecodeOp.Concat:
+                    // Concatenate two strings on stack
+                    var str2 = Pop().AsString();
+                    var str1 = Pop().AsString();
+                    Push(RuntimeValue.FromString(str1 + str2));
+                    break;
+
+                case BytecodeOp.LoadDynamic:
+                    // Load variable by dynamic name (name on stack)
+                    var varName = Pop().AsString();
+                    Push(LoadDynamicVariable(varName));
+                    break;
+
+                case BytecodeOp.StoreDynamic:
+                    // Store to variable by dynamic name
+                    // Stack: [name, value] (value at top)
+                    value = Pop();
+                    varName = Pop().AsString();
+                    StoreDynamicVariable(varName, value);
                     break;
 
                 // Arithmetic operations

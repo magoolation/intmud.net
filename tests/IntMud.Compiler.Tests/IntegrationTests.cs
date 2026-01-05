@@ -297,6 +297,59 @@ func ehNulo
     }
 
     [Fact]
+    public void ParseCompileExecute_ConditionalReturn_Works()
+    {
+        // Test the "ret condition, value" syntax from IntMud
+        // ret condition, value - only returns value if condition is true
+        var source = @"
+classe teste
+
+func checaValor
+  ret arg0 > 5, ""maior""
+  ret ""menor_ou_igual""
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+
+        // When arg0 > 5, should return "maior"
+        var result = interpreter.ExecuteFunction(unit.Functions["checaValor"], new[] { RuntimeValue.FromInt(10) });
+        Assert.Equal("maior", result.AsString());
+
+        // When arg0 <= 5, condition is false, so first ret is skipped, returns "menor_ou_igual"
+        result = interpreter.ExecuteFunction(unit.Functions["checaValor"], new[] { RuntimeValue.FromInt(3) });
+        Assert.Equal("menor_ou_igual", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_ConditionalReturn_NullValue_Works()
+    {
+        // Test ret condition, nulo
+        var source = @"
+classe teste
+
+func validaLista
+  ret arg0 == 0, nulo
+  ret ""lista_valida""
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+
+        // When arg0 == 0, should return null
+        var result = interpreter.ExecuteFunction(unit.Functions["validaLista"], new[] { RuntimeValue.FromInt(0) });
+        Assert.True(result.IsNull);
+
+        // When arg0 != 0, condition is false, returns "lista_valida"
+        result = interpreter.ExecuteFunction(unit.Functions["validaLista"], new[] { RuntimeValue.FromInt(5) });
+        Assert.Equal("lista_valida", result.AsString());
+    }
+
+    [Fact]
     public void Disassemble_ShowsBytecode()
     {
         var source = @"
@@ -1168,13 +1221,14 @@ func testar
     public void ParseCompileExecute_ArrayAutoExpand_Works()
     {
         // Test array auto-expansion when assigning beyond current size
+        // Note: In IntMud, vector access uses dot notation (arr.5 for element 5)
         var source = @"
 classe teste
 
 func testar
   int32 arr
   arr = vetor(2)
-  arr[5] = 100
+  arr.5 = 100
   ret tam(arr)
 ";
         var parser = new IntMudSourceParser();
@@ -1194,6 +1248,7 @@ func testar
     public void ParseCompileExecute_ArraySum_Works()
     {
         // Test sum of array elements in a loop
+        // Note: In IntMud, vector access uses dot notation (arr.0, arr.[i])
         var source = @"
 classe teste
 
@@ -1203,14 +1258,14 @@ func testar
   int32 i
 
   arr = vetor(4)
-  arr[0] = 1
-  arr[1] = 2
-  arr[2] = 3
-  arr[3] = 4
+  arr.0 = 1
+  arr.1 = 2
+  arr.2 = 3
+  arr.3 = 4
 
   soma = 0
   epara i = 0, i < 4, i = i + 1
-    soma = soma + arr[i]
+    soma = soma + arr.[i]
   efim
 
   ret soma
@@ -1232,13 +1287,14 @@ func testar
     public void ParseCompileExecute_StringIndex_Works()
     {
         // Test string character access
+        // Note: In IntMud, string/vector access uses dot notation (s.0 for first character)
         var source = @"
 classe teste
 
 func testar
   txt s
   s = ""Hello""
-  ret s[0]
+  ret s.0
 ";
         var parser = new IntMudSourceParser();
         var ast = parser.Parse(source, "test.int");
@@ -1257,6 +1313,8 @@ func testar
     public void ParseCompileExecute_ForEach_Basic_Works()
     {
         // Test basic foreach loop over array
+        // Note: In IntMud, vector access uses dot notation (arr.0, arr.1, arr.[i])
+        // Bracket notation (arr[0]) is for dynamic identifier construction
         var source = @"
 classe teste
 
@@ -1265,9 +1323,9 @@ func testar
   int32 soma
 
   arr = vetor(3)
-  arr[0] = 10
-  arr[1] = 20
-  arr[2] = 30
+  arr.0 = 10
+  arr.1 = 20
+  arr.2 = 30
 
   soma = 0
   para cada item em arr
@@ -1392,11 +1450,11 @@ func testar
   int32 soma
 
   arr = vetor(5)
-  arr[0] = 1
-  arr[1] = 2
-  arr[2] = 3
-  arr[3] = 4
-  arr[4] = 5
+  arr.0 = 1
+  arr.1 = 2
+  arr.2 = 3
+  arr.3 = 4
+  arr.4 = 5
 
   soma = 0
   para cada item em arr
@@ -1432,11 +1490,11 @@ func testar
   int32 soma
 
   arr = vetor(5)
-  arr[0] = 1
-  arr[1] = 2
-  arr[2] = 3
-  arr[3] = 4
-  arr[4] = 5
+  arr.0 = 1
+  arr.1 = 2
+  arr.2 = 3
+  arr.3 = 4
+  arr.4 = 5
 
   soma = 0
   para cada item em arr
@@ -1473,11 +1531,11 @@ func testar
   int32 soma
 
   arr = vetor(5)
-  arr[0] = 1
-  arr[1] = 2
-  arr[2] = 3
-  arr[3] = 4
-  arr[4] = 5
+  arr.0 = 1
+  arr.1 = 2
+  arr.2 = 3
+  arr.3 = 4
+  arr.4 = 5
 
   soma = 0
   para cada item em arr
@@ -1512,12 +1570,12 @@ func testar
   int32 soma
 
   arr = vetor(6)
-  arr[0] = 1
-  arr[1] = 2
-  arr[2] = 3
-  arr[3] = 4
-  arr[4] = 5
-  arr[5] = 6
+  arr.0 = 1
+  arr.1 = 2
+  arr.2 = 3
+  arr.3 = 4
+  arr.4 = 5
+  arr.5 = 6
 
   soma = 0
   para cada item em arr
@@ -1553,15 +1611,15 @@ func testar
   int32 soma
 
   outer = vetor(3)
-  outer[0] = 1
-  outer[1] = 2
-  outer[2] = 3
+  outer.0 = 1
+  outer.1 = 2
+  outer.2 = 3
 
   inner = vetor(4)
-  inner[0] = 10
-  inner[1] = 20
-  inner[2] = 30
-  inner[3] = 40
+  inner.0 = 10
+  inner.1 = 20
+  inner.2 = 30
+  inner.3 = 40
 
   soma = 0
   para cada o em outer
@@ -1604,14 +1662,14 @@ func testar
   int32 soma
 
   outer = vetor(2)
-  outer[0] = 100
-  outer[1] = 200
+  outer.0 = 100
+  outer.1 = 200
 
   inner = vetor(4)
-  inner[0] = 1
-  inner[1] = 2
-  inner[2] = 3
-  inner[3] = 4
+  inner.0 = 1
+  inner.1 = 2
+  inner.2 = 3
+  inner.3 = 4
 
   soma = 0
   para cada o em outer
@@ -1654,14 +1712,14 @@ func testar
   int32 found
 
   outer = vetor(3)
-  outer[0] = 1
-  outer[1] = 2
-  outer[2] = 3
+  outer.0 = 1
+  outer.1 = 2
+  outer.2 = 3
 
   inner = vetor(3)
-  inner[0] = 10
-  inner[1] = 20
-  inner[2] = 30
+  inner.0 = 10
+  inner.1 = 20
+  inner.2 = 30
 
   soma = 0
   found = 0
@@ -1709,14 +1767,14 @@ func testar
   int32 skip
 
   outer = vetor(3)
-  outer[0] = 1
-  outer[1] = 2
-  outer[2] = 3
+  outer.0 = 1
+  outer.1 = 2
+  outer.2 = 3
 
   inner = vetor(3)
-  inner[0] = 1
-  inner[1] = 2
-  inner[2] = 3
+  inner.0 = 1
+  inner.1 = 2
+  inner.2 = 3
 
   soma = 0
   para cada o em outer
@@ -2657,6 +2715,226 @@ func testar
         var result = interpreter.Execute("testar");
 
         Assert.Equal("vetor", result.AsString());
+    }
+
+    [Fact]
+    public void ParseCompileExecute_OriginalIntMudSyntax_Works()
+    {
+        // Test parsing syntax patterns from original IntMud programs
+        var source = @"
+err = 1
+
+classe config
+const modo = 1
+const porta = 4000
+
+classe teste
+
+func iniclasse
+  criar(arg0)
+
+func ini
+  int8 x
+  x = 5
+  # Test senao with condition (else if)
+  se x == 1
+    ret ""um""
+  senao x == 5
+    ret ""cinco""
+  senao
+    ret ""outro""
+  fimse
+
+func validar
+  # Test conditional return: ret condition, value
+  ret arg0 == 0, nulo
+  ret arg0 < 0, ""negativo""
+  ret ""positivo""
+
+func classReference
+  # Test class:member syntax
+  ret config:modo + config:porta
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+
+        // Verify file options
+        Assert.Single(ast.Options.Where(o => o.Name == "err"));
+
+        // Verify classes
+        Assert.Equal(2, ast.Classes.Count);
+        Assert.Equal("config", ast.Classes[0].Name);
+        Assert.Equal("teste", ast.Classes[1].Name);
+
+        var unit = BytecodeCompiler.Compile(ast);
+
+        var interpreter = new BytecodeInterpreter(unit);
+
+        // Test ini function with else-if
+        var result = interpreter.Execute("ini");
+        Assert.Equal("cinco", result.AsString());
+
+        // Test conditional return
+        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(0) });
+        Assert.True(result.IsNull);
+
+        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(-5) });
+        Assert.Equal("negativo", result.AsString());
+
+        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(10) });
+        Assert.Equal("positivo", result.AsString());
+    }
+
+    [Fact]
+    public void Parse_QuestIntOriginal_ReportsErrors()
+    {
+        // Test parsing the original quest.int file to identify compatibility issues
+        var questPath = @"C:\Users\alecosta\source\repos\mud\intmud\programas-int\quest.int";
+
+        if (!File.Exists(questPath))
+        {
+            _output.WriteLine("quest.int not found, skipping test");
+            return;
+        }
+
+        // Use ReadSourceFile which handles encoding detection and keyword normalization
+        var source = IntMudSourceParser.ReadSourceFile(questPath);
+        var parser = new IntMudSourceParser();
+
+        var exception = Record.Exception(() => parser.Parse(source, "quest.int"));
+
+        if (exception != null)
+        {
+            _output.WriteLine($"Parse errors: {exception.Message}");
+        }
+        else
+        {
+            _output.WriteLine("Parsed successfully!");
+        }
+
+        // This test documents current behavior - we expect some parse errors
+        // due to syntax differences like "senão" with accent
+    }
+
+    [Fact]
+    public void Parse_ElseIfWithFunctionCall_ParsesCorrectly()
+    {
+        var code = @"
+classe teste
+func test
+  se x == 1
+    a = 1
+  senao txt(arg0, 0, 2) == ""x ""
+    b = 2
+  senao
+    c = 3
+  fimse
+";
+        var parser = new IntMudSourceParser();
+        var exception = Record.Exception(() => parser.Parse(code, "test.int"));
+
+        if (exception != null)
+        {
+            _output.WriteLine($"Parse error: {exception.Message}");
+        }
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Parse_FunctionCallWithMultipleArgs_ParsesCorrectly()
+    {
+        var code = @"
+classe teste
+func test
+  inic_jogo(valor*15-15, 100000)
+";
+        var parser = new IntMudSourceParser();
+        var exception = Record.Exception(() => parser.Parse(code, "test.int"));
+
+        if (exception != null)
+        {
+            _output.WriteLine($"Parse error: {exception.Message}");
+        }
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Parse_ReturnWithFunctionCallWithMultipleArgs_ParsesCorrectly()
+    {
+        var code = @"
+classe teste
+func test
+  se valor == subnivel
+    ret inic_jogo(valor*15-15, 100000)
+  senao
+    ret inic_jogo(valor*15-15, 15)
+  fimse
+";
+        var parser = new IntMudSourceParser();
+        var exception = Record.Exception(() => parser.Parse(code, "test.int"));
+
+        if (exception != null)
+        {
+            _output.WriteLine($"Parse error: {exception.Message}");
+        }
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void Parse_AllMudFiles_ParsesCorrectly()
+    {
+        // Test parsing all .int files from the complete MUD implementation
+        var mudPath = @"C:\Users\alecosta\source\repos\mud\intmud\mud";
+
+        if (!Directory.Exists(mudPath))
+        {
+            _output.WriteLine("MUD directory not found, skipping test");
+            return;
+        }
+
+        var files = Directory.GetFiles(mudPath, "*.int", SearchOption.AllDirectories);
+        _output.WriteLine($"Found {files.Length} .int files");
+
+        var parser = new IntMudSourceParser();
+        var failedFiles = new List<(string file, string error)>();
+        var successCount = 0;
+
+        foreach (var file in files)
+        {
+            try
+            {
+                var source = IntMudSourceParser.ReadSourceFile(file);
+                parser.Parse(source, file);
+                successCount++;
+            }
+            catch (Exception ex)
+            {
+                var relativePath = file.Replace(mudPath + "\\", "");
+                failedFiles.Add((relativePath, ex.Message));
+            }
+        }
+
+        _output.WriteLine($"Successfully parsed: {successCount}/{files.Length}");
+
+        if (failedFiles.Count > 0)
+        {
+            _output.WriteLine($"\nFailed files ({failedFiles.Count}):");
+            foreach (var (file, error) in failedFiles)
+            {
+                _output.WriteLine($"\n{file}:");
+                // Show first few lines of error
+                var errorLines = error.Split('\n').Take(5);
+                foreach (var line in errorLines)
+                {
+                    _output.WriteLine($"  {line}");
+                }
+            }
+        }
+
+        Assert.Empty(failedFiles);
     }
 
     #endregion

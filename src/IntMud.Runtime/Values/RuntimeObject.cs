@@ -104,6 +104,24 @@ public sealed class BytecodeRuntimeObject
     }
 
     /// <summary>
+    /// Check if the object has a field with the given name.
+    /// </summary>
+    public bool HasField(string name)
+    {
+        if (_fields.ContainsKey(name))
+            return true;
+
+        // Check if it's defined as a variable in any class in the hierarchy
+        foreach (var unit in _classHierarchy)
+        {
+            if (unit.Variables.Any(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase)))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Check if the object has a method with the given name.
     /// </summary>
     public bool HasMethod(string name)

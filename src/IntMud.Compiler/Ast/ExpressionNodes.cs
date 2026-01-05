@@ -137,7 +137,35 @@ public class MemberAccessNode : ExpressionNode
     public required ExpressionNode Object { get; init; }
     public required string Member { get; init; }
 
+    /// <summary>
+    /// Whether this is a countdown variable (has @ suffix).
+    /// </summary>
+    public bool IsCountdown { get; set; }
+
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitMemberAccess(this);
+}
+
+/// <summary>
+/// Dynamic member access expression (a.prefix_[expr]_suffix).
+/// The member name is constructed by concatenating static and dynamic parts.
+/// </summary>
+public class DynamicMemberAccessNode : ExpressionNode
+{
+    public required ExpressionNode Object { get; init; }
+
+    /// <summary>
+    /// Parts of the dynamic member name. Each part is either:
+    /// - A StringLiteralNode for static parts (e.g., "cmd_", "_suffix")
+    /// - An expression for dynamic parts (e.g., arg1)
+    /// </summary>
+    public List<ExpressionNode> MemberParts { get; } = new();
+
+    /// <summary>
+    /// Whether this is a countdown variable (has @ suffix).
+    /// </summary>
+    public bool IsCountdown { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDynamicMemberAccess(this);
 }
 
 /// <summary>
@@ -240,22 +268,67 @@ public class ArgsReferenceNode : ExpressionNode
 }
 
 /// <summary>
-/// Dollar reference ($classname).
+/// Dynamic identifier reference for patterns like x[y], x[y]_suffix, [expr], [expr]_suffix.
+/// In IntMud, [expr] creates a dynamic variable/function name by concatenating
+/// the static parts with the evaluated expression values.
+/// Example: x["1"] = 10 is the same as x1 = 10
+/// Example: x[y] = 20 where y="_teste" is the same as x_teste = 20
+/// </summary>
+public class DynamicIdentifierNode : ExpressionNode
+{
+    /// <summary>
+    /// Parts that make up the dynamic identifier name.
+    /// StringLiteralNode for static text parts, other ExpressionNode for dynamic parts.
+    /// </summary>
+    public List<ExpressionNode> Parts { get; } = new();
+
+    /// <summary>Whether this identifier has the countdown @ suffix.</summary>
+    public bool IsCountdown { get; set; }
+
+    public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDynamicIdentifier(this);
+}
+
+/// <summary>
+/// Dollar reference ($classname or $[expr] or $name[expr]).
 /// </summary>
 public class DollarReferenceNode : ExpressionNode
 {
-    public required string ClassName { get; init; }
+    /// <summary>Static class name for $classname, or base name for $name[expr].</summary>
+    public string? ClassName { get; init; }
+
+    /// <summary>Dynamic expression for $[expr] or the index in $name[expr].</summary>
+    public ExpressionNode? DynamicExpression { get; init; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitDollarReference(this);
 }
 
 /// <summary>
-/// Class member reference (classname:member).
+/// Class member reference (classname:member or name[expr]:member).
+/// Supports both static and dynamic member names.
 /// </summary>
 public class ClassReferenceNode : ExpressionNode
 {
-    public required string ClassName { get; init; }
-    public required string MemberName { get; init; }
+    /// <summary>Static class name, or base name for dynamic reference.</summary>
+    public string? ClassName { get; init; }
+
+    /// <summary>Dynamic index expression for name[expr]:member.</summary>
+    public ExpressionNode? ClassNameIndex { get; init; }
+
+    /// <summary>
+    /// Static member name (when DynamicMemberParts is empty).
+    /// </summary>
+    public string? MemberName { get; set; }
+
+    /// <summary>
+    /// Dynamic member parts for patterns like class:prefix_[expr]_suffix.
+    /// If non-empty, overrides MemberName.
+    /// </summary>
+    public List<ExpressionNode> DynamicMemberParts { get; } = new();
+
+    /// <summary>
+    /// Whether this is a countdown variable (has @ suffix).
+    /// </summary>
+    public bool IsCountdown { get; set; }
 
     public override T Accept<T>(IAstVisitor<T> visitor) => visitor.VisitClassReference(this);
 }

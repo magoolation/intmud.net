@@ -288,6 +288,7 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     public object? VisitNullCoalesceExpression(NullCoalesceExpressionNode node) => null;
     public object? VisitAssignmentExpression(AssignmentExpressionNode node) => null;
     public object? VisitMemberAccess(MemberAccessNode node) => null;
+    public object? VisitDynamicMemberAccess(DynamicMemberAccessNode node) => null;
     public object? VisitIndexAccess(IndexAccessNode node) => null;
     public object? VisitFunctionCall(FunctionCallNode node) => null;
     public object? VisitPostfixIncrement(PostfixIncrementNode node) => null;
@@ -298,6 +299,7 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     public object? VisitThisReference(ThisReferenceNode node) => null;
     public object? VisitArgReference(ArgReferenceNode node) => null;
     public object? VisitArgsReference(ArgsReferenceNode node) => null;
+    public object? VisitDynamicIdentifier(DynamicIdentifierNode node) => null;
     public object? VisitDollarReference(DollarReferenceNode node) => null;
     public object? VisitClassReference(ClassReferenceNode node) => null;
     public object? VisitNewExpression(NewExpressionNode node) => null;
@@ -636,7 +638,25 @@ internal sealed class StatementCompiler : IAstVisitor<object?>
 
     public object? VisitReturnStatement(ReturnStatementNode node)
     {
-        if (node.Value != null)
+        if (node.Condition != null)
+        {
+            // ret condition, value - only returns if condition is true
+            CompileExpression(node.Condition);
+            var skipReturn = _emitter.EmitJumpIfFalse();
+
+            if (node.Value != null)
+            {
+                CompileExpression(node.Value);
+                _emitter.EmitReturnValue();
+            }
+            else
+            {
+                _emitter.EmitReturn();
+            }
+
+            _emitter.PatchJump(skipReturn);
+        }
+        else if (node.Value != null)
         {
             CompileExpression(node.Value);
             _emitter.EmitReturnValue();
@@ -742,6 +762,7 @@ internal sealed class StatementCompiler : IAstVisitor<object?>
     public object? VisitNullCoalesceExpression(NullCoalesceExpressionNode node) => null;
     public object? VisitAssignmentExpression(AssignmentExpressionNode node) => null;
     public object? VisitMemberAccess(MemberAccessNode node) => null;
+    public object? VisitDynamicMemberAccess(DynamicMemberAccessNode node) => null;
     public object? VisitIndexAccess(IndexAccessNode node) => null;
     public object? VisitFunctionCall(FunctionCallNode node) => null;
     public object? VisitPostfixIncrement(PostfixIncrementNode node) => null;
@@ -752,6 +773,7 @@ internal sealed class StatementCompiler : IAstVisitor<object?>
     public object? VisitThisReference(ThisReferenceNode node) => null;
     public object? VisitArgReference(ArgReferenceNode node) => null;
     public object? VisitArgsReference(ArgsReferenceNode node) => null;
+    public object? VisitDynamicIdentifier(DynamicIdentifierNode node) => null;
     public object? VisitDollarReference(DollarReferenceNode node) => null;
     public object? VisitClassReference(ClassReferenceNode node) => null;
     public object? VisitNewExpression(NewExpressionNode node) => null;
@@ -1027,6 +1049,11 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
             member.Object.Accept(this);
             _emitter.EmitLoadField(member.Member);
         }
+        else if (expr is DynamicMemberAccessNode dynamicMember)
+        {
+            // Use the visitor implementation
+            VisitDynamicMemberAccess(dynamicMember);
+        }
         else if (expr is IndexAccessNode index)
         {
             index.Object.Accept(this);
@@ -1075,6 +1102,34 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
             _emitter.EmitSwap();
             _emitter.EmitStoreField(member.Member);
         }
+        else if (expr is DynamicMemberAccessNode dynamicMember)
+        {
+            // Stack: [value]
+            // Need to push: [value, object, fieldName]
+            dynamicMember.Object.Accept(this);
+
+            // Build the dynamic member name
+            if (dynamicMember.MemberParts.Count == 0)
+            {
+                throw new CompilerException("Dynamic member access must have at least one part", expr.Line);
+            }
+
+            CompileMemberPart(dynamicMember.MemberParts[0]);
+            for (int i = 1; i < dynamicMember.MemberParts.Count; i++)
+            {
+                CompileMemberPart(dynamicMember.MemberParts[i]);
+                _emitter.EmitAdd();
+            }
+
+            if (dynamicMember.IsCountdown)
+            {
+                _emitter.EmitPushString("@");
+                _emitter.EmitAdd();
+            }
+
+            // Stack: [value, object, fieldName]
+            _emitter.EmitStoreFieldDynamic();
+        }
         else if (expr is IndexAccessNode index)
         {
             index.Object.Accept(this);
@@ -1085,9 +1140,39 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
             // For now, we'll just emit in the right order
             _emitter.EmitStoreIndex();
         }
+        else if (expr is DynamicIdentifierNode dynamicId)
+        {
+            // Stack: [value]
+            // Build the dynamic variable name
+            if (dynamicId.Parts.Count == 0)
+            {
+                throw new CompilerException("Dynamic identifier must have at least one part", expr.Line);
+            }
+
+            // Push the first name part
+            CompileDynamicNamePart(dynamicId.Parts[0]);
+
+            // Concatenate remaining parts
+            for (int i = 1; i < dynamicId.Parts.Count; i++)
+            {
+                CompileDynamicNamePart(dynamicId.Parts[i]);
+                _emitter.EmitConcat();
+            }
+
+            if (dynamicId.IsCountdown)
+            {
+                _emitter.EmitPushString("@");
+                _emitter.EmitConcat();
+            }
+
+            // Stack: [value, name]
+            // Swap to get [name, value] for StoreDynamic
+            _emitter.EmitSwap();
+            _emitter.EmitStoreDynamic();
+        }
         else
         {
-            throw new CompilerException("Invalid assignment target", expr.Line);
+            throw new CompilerException($"Invalid assignment target: {expr.GetType().Name}", expr.Line);
         }
     }
 
@@ -1096,6 +1181,56 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
         node.Object.Accept(this);
         _emitter.EmitLoadField(node.Member);
         return null;
+    }
+
+    public object? VisitDynamicMemberAccess(DynamicMemberAccessNode node)
+    {
+        // Compile the object expression
+        node.Object.Accept(this);
+
+        // Build the dynamic member name by concatenating all parts
+        // First part
+        if (node.MemberParts.Count == 0)
+        {
+            throw new CompilerException("Dynamic member access must have at least one part", node.Line);
+        }
+
+        // Compile first part
+        CompileMemberPart(node.MemberParts[0]);
+
+        // Concatenate remaining parts
+        for (int i = 1; i < node.MemberParts.Count; i++)
+        {
+            CompileMemberPart(node.MemberParts[i]);
+            _emitter.EmitAdd(); // String concatenation
+        }
+
+        // If countdown variable, append "@" to the name
+        if (node.IsCountdown)
+        {
+            _emitter.EmitPushString("@");
+            _emitter.EmitAdd();
+        }
+
+        // Stack now has: [object, fieldName]
+        // LoadFieldDynamic expects: [object, fieldName] and produces [value]
+        _emitter.EmitLoadFieldDynamic();
+        return null;
+    }
+
+    private void CompileMemberPart(ExpressionNode part)
+    {
+        if (part is StringLiteralNode strLit)
+        {
+            // Static part - push string directly
+            _emitter.EmitPushString(strLit.Value);
+        }
+        else
+        {
+            // Dynamic part - compile expression and convert to string
+            part.Accept(this);
+            // The runtime will convert to string when concatenating
+        }
     }
 
     public object? VisitIndexAccess(IndexAccessNode node)
@@ -1239,6 +1374,60 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
     {
         _emitter.EmitLoadArgCount();
         return null;
+    }
+
+    public object? VisitDynamicIdentifier(DynamicIdentifierNode node)
+    {
+        // Dynamic identifier - construct the name at runtime by concatenating parts
+        // Example: x["1"] becomes "x1"
+        // Example: x[y] where y="_teste" becomes "x_teste"
+
+        if (node.Parts.Count == 0)
+        {
+            throw new CompilerException("DynamicIdentifierNode has no parts", node.Line);
+        }
+
+        // Compile the first part (push its string value)
+        CompileDynamicNamePart(node.Parts[0]);
+
+        // Concatenate remaining parts
+        for (int i = 1; i < node.Parts.Count; i++)
+        {
+            CompileDynamicNamePart(node.Parts[i]);
+            _emitter.EmitConcat();
+        }
+
+        // Add countdown suffix if present
+        if (node.IsCountdown)
+        {
+            _emitter.EmitPushString("@");
+            _emitter.EmitConcat();
+        }
+
+        // The dynamic name is now on the stack
+        // Load the variable with that name
+        _emitter.EmitLoadDynamic();
+
+        return null;
+    }
+
+    /// <summary>
+    /// Compiles a part of a dynamic name, converting it to a string on the stack.
+    /// </summary>
+    private void CompileDynamicNamePart(ExpressionNode part)
+    {
+        if (part is StringLiteralNode strLit)
+        {
+            // Static string part - push directly
+            _emitter.EmitPushString(strLit.Value);
+        }
+        else
+        {
+            // Dynamic part - evaluate and convert to string
+            part.Accept(this);
+            // The runtime will need to convert the value to string
+            // For now we assume it's already a string or will be converted
+        }
     }
 
     public object? VisitDollarReference(DollarReferenceNode node)
