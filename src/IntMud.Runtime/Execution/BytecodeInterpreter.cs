@@ -7,6 +7,92 @@ using ConstantType = IntMud.Compiler.Bytecode.ConstantType;
 namespace IntMud.Runtime.Execution;
 
 /// <summary>
+/// Global registry that tracks all object instances by class name.
+/// This implements the IntMUD $classname syntax to get first object of a class.
+/// </summary>
+public static class GlobalObjectRegistry
+{
+    private static readonly Dictionary<string, List<BytecodeRuntimeObject>> _objectsByClass = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object _lock = new();
+
+    /// <summary>
+    /// Register an object instance.
+    /// </summary>
+    public static void Register(BytecodeRuntimeObject obj)
+    {
+        if (obj == null) return;
+        lock (_lock)
+        {
+            if (!_objectsByClass.TryGetValue(obj.ClassName, out var list))
+            {
+                list = new List<BytecodeRuntimeObject>();
+                _objectsByClass[obj.ClassName] = list;
+            }
+            if (!list.Contains(obj))
+            {
+                list.Add(obj);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Unregister an object instance.
+    /// </summary>
+    public static void Unregister(BytecodeRuntimeObject obj)
+    {
+        if (obj == null) return;
+        lock (_lock)
+        {
+            if (_objectsByClass.TryGetValue(obj.ClassName, out var list))
+            {
+                list.Remove(obj);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Get the first object of a class (implements $classname).
+    /// </summary>
+    public static BytecodeRuntimeObject? GetFirstObject(string className)
+    {
+        lock (_lock)
+        {
+            if (_objectsByClass.TryGetValue(className, out var list) && list.Count > 0)
+            {
+                return list[0];
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Get all objects of a class.
+    /// </summary>
+    public static IReadOnlyList<BytecodeRuntimeObject> GetObjects(string className)
+    {
+        lock (_lock)
+        {
+            if (_objectsByClass.TryGetValue(className, out var list))
+            {
+                return list.ToList();
+            }
+        }
+        return Array.Empty<BytecodeRuntimeObject>();
+    }
+
+    /// <summary>
+    /// Clear all registered objects (for testing).
+    /// </summary>
+    public static void Clear()
+    {
+        lock (_lock)
+        {
+            _objectsByClass.Clear();
+        }
+    }
+}
+
+/// <summary>
 /// Interprets bytecode instructions for the IntMUD virtual machine.
 /// </summary>
 public sealed class BytecodeInterpreter
@@ -2087,8 +2173,16 @@ public sealed class BytecodeInterpreter
 
             case "apagar":
             case "delete":
-                // apagar(object) - mark object for deletion (returns null)
+                // apagar(object) - mark object for deletion
                 // In IntMUD, this removes the object from the game world
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var objToDelete = args[0].AsObject() as BytecodeRuntimeObject;
+                    if (objToDelete != null)
+                    {
+                        GlobalObjectRegistry.Unregister(objToDelete);
+                    }
+                }
                 return RuntimeValue.Null;
 
             case "ref":
@@ -2526,16 +2620,19 @@ public sealed class BytecodeInterpreter
         // Create the object instance
         var obj = new BytecodeRuntimeObject(classUnit, baseUnits);
 
-        // Call constructor if it exists
-        var (constructor, definingUnit) = obj.GetMethodWithUnit("inicializar");
+        // Register the object in the global registry (for $classname syntax)
+        GlobalObjectRegistry.Register(obj);
+
+        // Call constructor if it exists (try "ini" first, then "inicializar")
+        var (constructor, definingUnit) = obj.GetMethodWithUnit("ini");
+        if (constructor == null)
+        {
+            (constructor, definingUnit) = obj.GetMethodWithUnit("inicializar");
+        }
+
         if (constructor != null && definingUnit != null)
         {
             ExecuteFunctionWithThis(constructor, obj, definingUnit, arguments);
-        }
-        else if (arguments.Length > 0)
-        {
-            // If no constructor but arguments were passed, it's an error
-            throw new RuntimeException($"Class '{className}' does not have a constructor but arguments were provided");
         }
 
         return RuntimeValue.FromObject(obj);
@@ -2561,7 +2658,12 @@ public sealed class BytecodeInterpreter
 
     private RuntimeValue LoadClass(string className)
     {
-        // TODO: Implement class loading
+        // $classname returns the first object of that class
+        var obj = GlobalObjectRegistry.GetFirstObject(className);
+        if (obj != null)
+        {
+            return RuntimeValue.FromObject(obj);
+        }
         return RuntimeValue.Null;
     }
 
@@ -2600,6 +2702,38 @@ public sealed class BytecodeInterpreter
             ConstantType.Expression => EvaluateExpressionBytecode(constant.ExpressionBytecode!),
             _ => RuntimeValue.Null
         };
+    }
+
+    /// <summary>
+    /// Execute an expression constant with a specific 'this' object and unit context.
+    /// Used for evaluating iniclasse constants during class initialization.
+    /// </summary>
+    public RuntimeValue ExecuteExpressionConstant(
+        IntMud.Compiler.Bytecode.CompiledConstant constant,
+        BytecodeRuntimeObject thisObject,
+        BytecodeCompiledUnit unit)
+    {
+        if (constant.Type != ConstantType.Expression || constant.ExpressionBytecode == null)
+        {
+            return EvaluateConstant(constant);
+        }
+
+        // Push a call frame with the 'this' object to establish context
+        _callStack.Push(new CallFrame
+        {
+            ThisObject = thisObject,
+            Arguments = Array.Empty<RuntimeValue>()
+        });
+
+        try
+        {
+            return EvaluateExpressionBytecode(constant.ExpressionBytecode);
+        }
+        finally
+        {
+            if (_callStack.Count > 0)
+                _callStack.Pop();
+        }
     }
 
     /// <summary>

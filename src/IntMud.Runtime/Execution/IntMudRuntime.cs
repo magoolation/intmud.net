@@ -1,6 +1,7 @@
 using IntMud.Compiler.Bytecode;
 using IntMud.Runtime.Types;
 using IntMud.Runtime.Values;
+using BytecodeCompiledFunction = IntMud.Compiler.Bytecode.CompiledFunction;
 
 namespace IntMud.Runtime.Execution;
 
@@ -101,10 +102,20 @@ public sealed class IntMudRuntime : IDisposable
     /// </summary>
     private void CallIniclasseOnAllClasses()
     {
+        // Clear the global registry before initialization
+        GlobalObjectRegistry.Clear();
+
         foreach (var (className, unit) in _compiledUnits)
         {
-            // Check if the class has an 'iniclasse' function
-            if (!unit.Functions.TryGetValue("iniclasse", out var iniclasseFunc))
+            // Check if the class has an 'iniclasse' function or constant
+            // In IntMUD, iniclasse can be a const expression like: const iniclasse = !$[arg0] && criar(arg0)
+            BytecodeCompiledFunction? iniclasseFunc = null;
+            unit.Functions.TryGetValue("iniclasse", out iniclasseFunc);
+
+            // Also check if there's an iniclasse constant (expression that will be evaluated)
+            var hasIniclasseConst = unit.Constants.ContainsKey("iniclasse");
+
+            if (iniclasseFunc == null && !hasIniclasseConst)
                 continue;
 
             try
@@ -113,15 +124,32 @@ public sealed class IntMudRuntime : IDisposable
                 var interpreter = new BytecodeInterpreter(unit, _compiledUnits);
                 interpreter.WriteOutput = text => OnOutput?.Invoke(text);
 
-                // Create a temporary object for 'this' context (even though iniclasse is typically static-like)
+                // Create a temporary object for 'this' context
                 var tempInstance = new BytecodeRuntimeObject(unit);
 
-                // Call iniclasse with the class name as argument (like original IntMUD)
-                interpreter.ExecuteFunctionWithThis(
-                    iniclasseFunc,
-                    tempInstance,
-                    unit,
-                    new[] { RuntimeValue.FromString(className) });
+                if (iniclasseFunc != null)
+                {
+                    // Call iniclasse function with the class name as argument
+                    interpreter.ExecuteFunctionWithThis(
+                        iniclasseFunc,
+                        tempInstance,
+                        unit,
+                        new[] { RuntimeValue.FromString(className) });
+                }
+                else if (hasIniclasseConst)
+                {
+                    // For const iniclasse, we need to set arg0 and evaluate the constant
+                    // The constant expression will use arg0 to get the class name
+                    // We simulate this by storing arg0 in globals before evaluation
+                    interpreter.Globals["arg0"] = RuntimeValue.FromString(className);
+
+                    // Evaluate the iniclasse constant (this may call criar() to create objects)
+                    if (unit.Constants.TryGetValue("iniclasse", out var constant))
+                    {
+                        // Evaluate the constant expression in context
+                        interpreter.ExecuteExpressionConstant(constant, tempInstance, unit);
+                    }
+                }
             }
             catch (TerminateException)
             {
@@ -148,6 +176,9 @@ public sealed class IntMudRuntime : IDisposable
         ResolveBaseClasses(unit, baseUnits, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
 
         var instance = new BytecodeRuntimeObject(unit, baseUnits);
+
+        // Register the object in the global registry (for $classname syntax)
+        GlobalObjectRegistry.Register(instance);
 
         // Create an interpreter for this instance
         var interpreter = new BytecodeInterpreter(unit, _compiledUnits);
