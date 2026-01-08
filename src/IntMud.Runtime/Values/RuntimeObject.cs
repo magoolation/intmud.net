@@ -58,9 +58,13 @@ public sealed class BytecodeRuntimeObject
                 }
             }
 
-            // Initialize constants
+            // Initialize literal constants only (Expression constants are evaluated at runtime)
             foreach (var constant in unit.Constants)
             {
+                // Skip Expression constants - they need runtime context (args, this)
+                if (constant.Value.Type == ConstantType.Expression)
+                    continue;
+
                 _fields[constant.Key] = constant.Value.Type switch
                 {
                     ConstantType.Int => RuntimeValue.FromInt(constant.Value.IntValue),
@@ -83,11 +87,15 @@ public sealed class BytecodeRuntimeObject
         // Check if it's a constant
         if (ClassUnit.Constants.TryGetValue(name, out var constant))
         {
+            // Note: Expression constants cannot be evaluated here because we don't have
+            // the runtime context (args, interpreter state). They are handled by the
+            // BytecodeInterpreter through LoadClassMember opcode.
             return constant.Type switch
             {
                 ConstantType.Int => RuntimeValue.FromInt(constant.IntValue),
                 ConstantType.Double => RuntimeValue.FromDouble(constant.DoubleValue),
                 ConstantType.String => RuntimeValue.FromString(constant.StringValue),
+                ConstantType.Expression => RuntimeValue.Null, // Handled by interpreter
                 _ => RuntimeValue.Null
             };
         }

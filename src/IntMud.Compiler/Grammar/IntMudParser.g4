@@ -4,6 +4,29 @@ options {
     tokenVocab = IntMudLexer;
 }
 
+@parser::members {
+    /// <summary>
+    /// Check if there's a newline in the hidden channel before the current token.
+    /// Used to prevent postfix ++ and -- from consuming tokens on a new line.
+    /// </summary>
+    private bool NoNewlineBefore()
+    {
+        var tokenIndex = CurrentToken.TokenIndex;
+        var stream = (ITokenStream)InputStream;
+
+        // Look at hidden tokens before current token
+        for (int i = tokenIndex - 1; i >= 0; i--)
+        {
+            var token = stream.Get(i);
+            if (token.Channel == Lexer.DefaultTokenChannel)
+                break; // Stop at previous visible token
+            if (token.Type == IntMudLexer.NEWLINE)
+                return false; // Found newline - don't allow postfix
+        }
+        return true; // No newline found - allow postfix
+    }
+}
+
 // ============================================================================
 // Top-level structure
 // ============================================================================
@@ -326,9 +349,11 @@ postfixExpression
 // Postfix operations: member access, increment/decrement, function calls
 // Note: In IntMud, arr[expr] is NOT array access - it's dynamic name construction
 // Vector access uses dot notation: arr.0, arr.1, arr.[expr]
+// IMPORTANT: Postfix ++ and -- only match if there's no newline before them.
+// This prevents "x++\n++y" from being parsed as "x" with two postfix increments.
 postfixOp
-    : PLUSPLUS
-    | MINUSMINUS
+    : {NoNewlineBefore()}? PLUSPLUS
+    | {NoNewlineBefore()}? MINUSMINUS
     | DOT dynamicMemberName arguments?
     | DOT DECIMAL_NUMBER                          // Vector element access: v.0, v.1
     | DOT LBRACKET bracketExpression RBRACKET     // Dynamic vector access: v.[expr] or v.[func]

@@ -30,8 +30,9 @@ public enum BytecodeOp : byte
     LoadGlobal = 24,    // followed by 2-byte string pool index (var name)
     StoreGlobal = 25,   // followed by 2-byte string pool index (var name)
     LoadArg = 26,       // followed by 1-byte arg index
-    LoadArgCount = 27,
-    LoadThis = 28,
+    StoreArg = 27,      // followed by 1-byte arg index
+    LoadArgCount = 28,
+    LoadThis = 29,
 
     // Array/Index Operations
     LoadIndex = 30,
@@ -88,8 +89,10 @@ public enum BytecodeOp : byte
     Call = 90,          // followed by 2-byte string pool index (function name) + 1-byte arg count
     CallMethod = 91,    // followed by 2-byte string pool index (method name) + 1-byte arg count
     CallBuiltin = 92,   // followed by 2-byte builtin function id + 1-byte arg count
-    Return = 93,
-    ReturnValue = 94,
+    CallMethodDynamic = 93, // method name on stack (as string) + 1-byte arg count
+    CallDynamic = 94,   // function name on stack (as string) + 1-byte arg count
+    Return = 95,
+    ReturnValue = 96,
 
     // Object Operations
     New = 100,          // followed by 2-byte string pool index (class name)
@@ -100,6 +103,10 @@ public enum BytecodeOp : byte
     // Class/Static References
     LoadClass = 110,    // followed by 2-byte string pool index (class name)
     LoadClassMember = 111, // followed by 2-byte (class) + 2-byte (member)
+    LoadClassDynamic = 112,    // class name on stack (as string)
+    LoadClassMemberDynamic = 113, // class name and member name on stack
+    StoreClassMember = 114, // followed by 2-byte (class) + 2-byte (member), value on stack
+    StoreClassMemberDynamic = 115, // class name, member name, and value on stack
 
     // Special
     Terminate = 120,
@@ -242,6 +249,12 @@ public sealed class BytecodeEmitter
     public void EmitLoadArg(int index)
     {
         _writer.Write((byte)BytecodeOp.LoadArg);
+        _writer.Write((byte)index);
+    }
+
+    public void EmitStoreArg(int index)
+    {
+        _writer.Write((byte)BytecodeOp.StoreArg);
         _writer.Write((byte)index);
     }
 
@@ -398,6 +411,20 @@ public sealed class BytecodeEmitter
         _writer.Write((byte)argCount);
     }
 
+    public void EmitCallMethodDynamic(int argCount)
+    {
+        // Method name is expected to be on the stack
+        _writer.Write((byte)BytecodeOp.CallMethodDynamic);
+        _writer.Write((byte)argCount);
+    }
+
+    public void EmitCallDynamic(int argCount)
+    {
+        // Function name is expected to be on the stack
+        _writer.Write((byte)BytecodeOp.CallDynamic);
+        _writer.Write((byte)argCount);
+    }
+
     public void EmitCallBuiltin(int builtinId, int argCount)
     {
         _writer.Write((byte)BytecodeOp.CallBuiltin);
@@ -443,6 +470,36 @@ public sealed class BytecodeEmitter
         _writer.Write((ushort)classIndex);
         _writer.Write((ushort)memberIndex);
     }
+
+    /// <summary>
+    /// Emit load class dynamically - class name is on the stack as a string.
+    /// </summary>
+    public void EmitLoadClassDynamic() => _writer.Write((byte)BytecodeOp.LoadClassDynamic);
+
+    /// <summary>
+    /// Emit load class member dynamically - class name and member name are on the stack.
+    /// Stack: [className, memberName] -> [value]
+    /// </summary>
+    public void EmitLoadClassMemberDynamic() => _writer.Write((byte)BytecodeOp.LoadClassMemberDynamic);
+
+    /// <summary>
+    /// Emit store class member - store value to a static class member.
+    /// Stack: [value] -> []
+    /// </summary>
+    public void EmitStoreClassMember(string className, string memberName)
+    {
+        var classIndex = AddString(className);
+        var memberIndex = AddString(memberName);
+        _writer.Write((byte)BytecodeOp.StoreClassMember);
+        _writer.Write((ushort)classIndex);
+        _writer.Write((ushort)memberIndex);
+    }
+
+    /// <summary>
+    /// Emit store class member dynamically - class name, member name, and value are on the stack.
+    /// Stack: [className, memberName, value] -> []
+    /// </summary>
+    public void EmitStoreClassMemberDynamic() => _writer.Write((byte)BytecodeOp.StoreClassMemberDynamic);
 
     // Special
     public void EmitTerminate() => _writer.Write((byte)BytecodeOp.Terminate);

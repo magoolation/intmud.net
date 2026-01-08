@@ -162,6 +162,12 @@ public sealed class CompiledConstant
     /// String value (if Type is String).
     /// </summary>
     public string? StringValue { get; set; }
+
+    /// <summary>
+    /// Bytecode for expression (if Type is Expression).
+    /// Evaluated at runtime when the constant is accessed.
+    /// </summary>
+    public byte[]? ExpressionBytecode { get; set; }
 }
 
 /// <summary>
@@ -172,7 +178,8 @@ public enum ConstantType
     Null,
     Int,
     Double,
-    String
+    String,
+    Expression  // Computed at runtime
 }
 
 /// <summary>

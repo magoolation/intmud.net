@@ -1,0 +1,8 @@
+classe teste
+herda cmd
+  ref dono
+
+  func ini
+    ret !(dono = arg0), apagar(este)
+  efunc
+fclasse

@@ -44,12 +44,27 @@ public sealed class CompilerScope
 
     /// <summary>
     /// Define a local variable in this scope.
+    /// IntMUD allows variable redeclaration within the same function - it just reuses the existing variable.
     /// </summary>
     public int DefineLocal(string name, string typeName)
     {
-        if (_locals.ContainsKey(name))
+        // IntMUD allows variable redeclaration - if already defined, just return existing index
+        if (_locals.TryGetValue(name, out var existingIndex))
         {
-            throw new CompilerException($"Variable '{name}' is already defined in this scope");
+            return existingIndex;
+        }
+
+        // Check parent scopes for existing variable
+        var current = _parent;
+        while (current != null)
+        {
+            if (current._locals.TryGetValue(name, out var parentIndex))
+            {
+                // Variable exists in parent scope - reuse it by adding to our locals map
+                _locals[name] = parentIndex;
+                return parentIndex;
+            }
+            current = current._parent;
         }
 
         var index = _nextLocalIndex++;

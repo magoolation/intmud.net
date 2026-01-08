@@ -62,7 +62,8 @@ public sealed class ScriptEventHandler
         {
             try
             {
-                _persistentInterpreter.ExecuteFunctionWithThis(initFunc, _mainInstance, []);
+                // Use _mainUnit as definingUnit to ensure correct string pool
+                _persistentInterpreter.ExecuteFunctionWithThis(initFunc, _mainInstance, _mainUnit, []);
                 _logger.LogInformation("Script initialization completed");
             }
             catch (Exception ex)
@@ -120,7 +121,7 @@ public sealed class ScriptEventHandler
         {
             try
             {
-                _persistentInterpreter.ExecuteFunctionWithThis(tickFunc, _mainInstance, []);
+                _persistentInterpreter.ExecuteFunctionWithThis(tickFunc, _mainInstance, _mainUnit, []);
             }
             catch (Exception ex)
             {
@@ -143,7 +144,7 @@ public sealed class ScriptEventHandler
 
         try
         {
-            return _persistentInterpreter.ExecuteFunctionWithThis(eventFunc, _mainInstance, args);
+            return _persistentInterpreter.ExecuteFunctionWithThis(eventFunc, _mainInstance, _mainUnit, args);
         }
         catch (Exception ex)
         {
@@ -180,7 +181,7 @@ public sealed class ScriptEventHandler
                 funcArgs.Add(RuntimeValue.FromString(args ?? ""));
             }
 
-            var result = _persistentInterpreter.ExecuteFunctionWithThis(eventFunc, _mainInstance, funcArgs.ToArray());
+            var result = _persistentInterpreter.ExecuteFunctionWithThis(eventFunc, _mainInstance, _mainUnit, funcArgs.ToArray());
 
             // Clear the output buffer
             _persistentInterpreter.ClearOutputBuffer();

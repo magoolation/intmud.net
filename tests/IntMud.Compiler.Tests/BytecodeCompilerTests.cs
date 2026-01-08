@@ -95,6 +95,61 @@ public class BytecodeEmitterTests
     }
 
     [Fact]
+    public void EmitLoadClassDynamic_EncodesCorrectly()
+    {
+        var stringPool = new List<string>();
+        var emitter = new BytecodeEmitter(stringPool);
+
+        emitter.EmitLoadClassDynamic();
+
+        var bytecode = emitter.GetBytecode();
+        Assert.Single(bytecode);
+        Assert.Equal((byte)BytecodeOp.LoadClassDynamic, bytecode[0]);
+    }
+
+    [Fact]
+    public void EmitLoadClassMemberDynamic_EncodesCorrectly()
+    {
+        var stringPool = new List<string>();
+        var emitter = new BytecodeEmitter(stringPool);
+
+        emitter.EmitLoadClassMemberDynamic();
+
+        var bytecode = emitter.GetBytecode();
+        Assert.Single(bytecode);
+        Assert.Equal((byte)BytecodeOp.LoadClassMemberDynamic, bytecode[0]);
+    }
+
+    [Fact]
+    public void EmitStoreClassMember_EncodesCorrectly()
+    {
+        var stringPool = new List<string>();
+        var emitter = new BytecodeEmitter(stringPool);
+
+        emitter.EmitStoreClassMember("TestClass", "testMember");
+
+        var bytecode = emitter.GetBytecode();
+        Assert.Equal(5, bytecode.Length); // 1 opcode + 2 bytes class + 2 bytes member
+        Assert.Equal((byte)BytecodeOp.StoreClassMember, bytecode[0]);
+        Assert.Equal(2, stringPool.Count);
+        Assert.Equal("TestClass", stringPool[0]);
+        Assert.Equal("testMember", stringPool[1]);
+    }
+
+    [Fact]
+    public void EmitStoreClassMemberDynamic_EncodesCorrectly()
+    {
+        var stringPool = new List<string>();
+        var emitter = new BytecodeEmitter(stringPool);
+
+        emitter.EmitStoreClassMemberDynamic();
+
+        var bytecode = emitter.GetBytecode();
+        Assert.Single(bytecode);
+        Assert.Equal((byte)BytecodeOp.StoreClassMemberDynamic, bytecode[0]);
+    }
+
+    [Fact]
     public void LoopContext_BreakAndContinue()
     {
         var stringPool = new List<string>();
@@ -186,6 +241,57 @@ public class BytecodeCompilerTests
 
         Assert.Equal(ConstantType.String, unit.Constants["MESSAGE"].Type);
         Assert.Equal("Hello World", unit.Constants["MESSAGE"].StringValue);
+    }
+
+    [Fact]
+    public void Compile_ExpressionConstant_GeneratesBytecode()
+    {
+        // Test: const EXPR = 10 + 5
+        var classNode = new ClassDefinitionNode { Name = "TestClass" };
+        classNode.Members.Add(new ConstantDefinitionNode
+        {
+            Name = "EXPR",
+            Value = new BinaryExpressionNode
+            {
+                Left = new NumericLiteralNode { Value = 10, IsInteger = true },
+                Operator = BinaryOperator.Add,
+                Right = new NumericLiteralNode { Value = 5, IsInteger = true }
+            }
+        });
+
+        var ast = new CompilationUnitNode();
+        ast.Classes.Add(classNode);
+
+        var unit = BytecodeCompiler.Compile(ast);
+
+        Assert.Equal(ConstantType.Expression, unit.Constants["EXPR"].Type);
+        Assert.NotNull(unit.Constants["EXPR"].ExpressionBytecode);
+        Assert.True(unit.Constants["EXPR"].ExpressionBytecode!.Length > 0);
+    }
+
+    [Fact]
+    public void Compile_ExpressionConstant_WithArgReference_GeneratesBytecode()
+    {
+        // Test: const ARG_EXPR = arg0 + 1
+        var classNode = new ClassDefinitionNode { Name = "TestClass" };
+        classNode.Members.Add(new ConstantDefinitionNode
+        {
+            Name = "ARG_EXPR",
+            Value = new BinaryExpressionNode
+            {
+                Left = new ArgReferenceNode { Index = 0 },
+                Operator = BinaryOperator.Add,
+                Right = new NumericLiteralNode { Value = 1, IsInteger = true }
+            }
+        });
+
+        var ast = new CompilationUnitNode();
+        ast.Classes.Add(classNode);
+
+        var unit = BytecodeCompiler.Compile(ast);
+
+        Assert.Equal(ConstantType.Expression, unit.Constants["ARG_EXPR"].Type);
+        Assert.NotNull(unit.Constants["ARG_EXPR"].ExpressionBytecode);
     }
 
     [Fact]
@@ -326,12 +432,15 @@ public class CompilerScopeTests
     }
 
     [Fact]
-    public void DefineLocal_DuplicateName_Throws()
+    public void DefineLocal_DuplicateName_ReturnsExistingIndex()
     {
+        // IntMUD allows variable redeclaration - it just reuses the existing variable
         var scope = new CompilerScope(null);
-        scope.DefineLocal("test", "int32");
+        var index1 = scope.DefineLocal("test", "int32");
+        var index2 = scope.DefineLocal("test", "int32");
 
-        Assert.Throws<CompilerException>(() => scope.DefineLocal("test", "int32"));
+        Assert.Equal(index1, index2);
+        Assert.Equal(1, scope.LocalCount); // Only one variable should exist
     }
 
     [Fact]

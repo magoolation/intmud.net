@@ -1,0 +1,15 @@
+classe teste
+herda cmd
+  func test
+    int8 num
+    int expatual
+    int max
+    int pnivel
+    enquanto 1
+      sair expatual < max || max <= 0
+      expatual -= max, pnivel++
+      var.z_aulas_ += config:aulas
+      ++num >= 5 && (expatual = 0)
+    efim
+  efunc
+fclasse

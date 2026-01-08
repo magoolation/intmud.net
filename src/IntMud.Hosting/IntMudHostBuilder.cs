@@ -1,8 +1,10 @@
 using System.Diagnostics;
+using System.Text;
 using IntMud.Compiler.Bytecode;
 using IntMud.Compiler.Parsing;
 using IntMud.Networking;
 using IntMud.Runtime.Execution;
+using IntMud.Runtime.Types;
 using IntMud.Runtime.Values;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -141,12 +143,16 @@ public sealed class IntMudEngine : IDisposable
     private readonly ILoggerFactory _loggerFactory;
 
     private readonly Dictionary<string, CompiledUnit> _compiledUnits = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SpecialTypeManager _specialTypeManager = new();
+    private IntMudConfig? _config;
+    private IntMudRuntime? _runtime;
     private SocketListener? _listener;
     private FileSystemWatcher? _fileWatcher;
     private ScriptEventHandler? _eventHandler;
     private bool _running;
     private bool _disposed;
     private DateTime _lastReload = DateTime.MinValue;
+    private readonly Queue<string> _keyBuffer = new();
 
     public IntMudEngine(
         IntMudHostOptions options,
@@ -182,6 +188,21 @@ public sealed class IntMudEngine : IDisposable
     public ScriptEventHandler? EventHandler => _eventHandler;
 
     /// <summary>
+    /// The loaded configuration from the main .int file.
+    /// </summary>
+    public IntMudConfig? Config => _config;
+
+    /// <summary>
+    /// Manager for special types (inttempo, intexec, etc).
+    /// </summary>
+    public SpecialTypeManager SpecialTypes => _specialTypeManager;
+
+    /// <summary>
+    /// The IntMUD runtime for event processing.
+    /// </summary>
+    public IntMudRuntime? Runtime => _runtime;
+
+    /// <summary>
     /// Start the engine.
     /// </summary>
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -195,11 +216,28 @@ public sealed class IntMudEngine : IDisposable
         // Load and compile source files
         await LoadSourceFilesAsync(cancellationToken);
 
-        // Initialize event handler
+        // Initialize event handler (for server mode compatibility)
         _eventHandler = new ScriptEventHandler(
             _loggerFactory.CreateLogger<ScriptEventHandler>(),
             _compiledUnits);
         _eventHandler.SetMainClass("main");
+
+        // Initialize the IntMUD runtime for special types
+        _runtime = new IntMudRuntime(_compiledUnits);
+        _runtime.OnOutput += OnRuntimeOutput;
+        _runtime.OnReadKey += OnRuntimeReadKey;
+        _runtime.OnTerminate += OnRuntimeTerminate;
+
+        _logger.LogInformation("Initializing runtime...");
+        _runtime.Initialize();
+
+        var instanceCount = _runtime.Instances.Count;
+        _logger.LogInformation("Created {Count} instances with special types", instanceCount);
+
+        foreach (var (className, _) in _runtime.Instances)
+        {
+            _logger.LogDebug("  - {ClassName}", className);
+        }
 
         // Start hot-reload if enabled
         if (_options.EnableHotReload)
@@ -213,8 +251,89 @@ public sealed class IntMudEngine : IDisposable
             StartServer();
         }
 
+        // Start the runtime event loop (for interpreter mode)
+        if (_options.ServerPort == 0)
+        {
+            _logger.LogInformation("Starting runtime event loop (interpreter mode)...");
+            _runtime.Start();
+        }
+
         _running = true;
         _logger.LogInformation("IntMUD engine started");
+    }
+
+    private void OnRuntimeOutput(string text)
+    {
+        // Write to console
+        Console.Write(text);
+    }
+
+    private string? OnRuntimeReadKey()
+    {
+        // Non-blocking key read
+        lock (_keyBuffer)
+        {
+            if (_keyBuffer.Count > 0)
+                return _keyBuffer.Dequeue();
+        }
+
+        // Only try to read keys if we have an interactive console
+        if (!Console.IsInputRedirected)
+        {
+            try
+            {
+                if (Console.KeyAvailable)
+                {
+                    var key = Console.ReadKey(intercept: true);
+                    return KeyToString(key);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // No console available - ignore
+            }
+        }
+
+        return null;
+    }
+
+    private static string KeyToString(ConsoleKeyInfo key)
+    {
+        return key.Key switch
+        {
+            ConsoleKey.Enter => "ENTER",
+            ConsoleKey.Escape => "ESC",
+            ConsoleKey.UpArrow => "UP",
+            ConsoleKey.DownArrow => "DOWN",
+            ConsoleKey.LeftArrow => "LEFT",
+            ConsoleKey.RightArrow => "RIGHT",
+            ConsoleKey.F1 => "F1",
+            ConsoleKey.F2 => "F2",
+            ConsoleKey.F3 => "F3",
+            ConsoleKey.F4 => "F4",
+            ConsoleKey.F5 => "F5",
+            ConsoleKey.F6 => "F6",
+            ConsoleKey.F7 => "F7",
+            ConsoleKey.F8 => "F8",
+            ConsoleKey.F9 => "F9",
+            ConsoleKey.F10 => "F10",
+            ConsoleKey.F11 => "F11",
+            ConsoleKey.F12 => "F12",
+            ConsoleKey.Backspace => "BACKSPACE",
+            ConsoleKey.Delete => "DELETE",
+            ConsoleKey.Home => "HOME",
+            ConsoleKey.End => "END",
+            ConsoleKey.PageUp => "PAGEUP",
+            ConsoleKey.PageDown => "PAGEDOWN",
+            ConsoleKey.Tab => "TAB",
+            _ => key.KeyChar != '\0' ? key.KeyChar.ToString() : key.Key.ToString()
+        };
+    }
+
+    private void OnRuntimeTerminate()
+    {
+        _logger.LogInformation("Runtime requested termination");
+        _running = false;
     }
 
     /// <summary>
@@ -227,6 +346,11 @@ public sealed class IntMudEngine : IDisposable
 
         _logger.LogInformation("Stopping IntMUD engine...");
         _running = false;
+
+        // Stop the runtime
+        _runtime?.Stop();
+        _runtime?.Dispose();
+        _runtime = null;
 
         // Stop file watcher
         _fileWatcher?.Dispose();
@@ -341,30 +465,112 @@ public sealed class IntMudEngine : IDisposable
             return;
         }
 
-        var files = Directory.GetFiles(sourcePath, "*.int", SearchOption.AllDirectories);
-        _logger.LogInformation("Found {Count} source files", files.Length);
+        // Determine the main config file name (same as directory name + .int)
+        var dirName = Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        var mainConfigFile = Path.Combine(sourcePath, $"{dirName}.int");
 
-        var parser = new IntMudSourceParser();
+        // Try to load the config file
+        var configParser = new IntMudConfigParser();
+        var includeDirs = new List<string>();
 
-        foreach (var file in files)
+        if (File.Exists(mainConfigFile))
         {
             try
             {
-                var source = await File.ReadAllTextAsync(file, cancellationToken);
+                var configContent = await File.ReadAllTextAsync(mainConfigFile, Encoding.Latin1, cancellationToken);
+                _config = configParser.Parse(configContent, mainConfigFile);
+                _logger.LogInformation("Loaded config from {File}: {IncludeCount} includes",
+                    Path.GetFileName(mainConfigFile), _config.Includes.Count);
+
+                // Resolve include directories
+                foreach (var include in _config.Includes)
+                {
+                    var includePath = Path.Combine(sourcePath, include.TrimEnd('/').Replace('/', Path.DirectorySeparatorChar));
+                    if (Directory.Exists(includePath))
+                    {
+                        includeDirs.Add(includePath);
+                        _logger.LogDebug("Include directory: {Path}", includePath);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Include directory not found: {Path}", includePath);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error loading config from {File}, will scan all directories",
+                    mainConfigFile);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("No config file found at {File}, will scan all directories",
+                mainConfigFile);
+        }
+
+        // If no includes specified, scan all subdirectories
+        if (includeDirs.Count == 0)
+        {
+            includeDirs.Add(sourcePath);
+        }
+
+        // Collect all .int files from include directories
+        var allFiles = new List<string>();
+        foreach (var dir in includeDirs)
+        {
+            var files = Directory.GetFiles(dir, "*.int", SearchOption.AllDirectories);
+            allFiles.AddRange(files);
+        }
+
+        // Also add files from the root directory (but not config file itself)
+        var rootFiles = Directory.GetFiles(sourcePath, "*.int", SearchOption.TopDirectoryOnly);
+        foreach (var file in rootFiles)
+        {
+            if (!string.Equals(file, mainConfigFile, StringComparison.OrdinalIgnoreCase) &&
+                !allFiles.Contains(file, StringComparer.OrdinalIgnoreCase))
+            {
+                allFiles.Add(file);
+            }
+        }
+
+        _logger.LogInformation("Found {Count} source files", allFiles.Count);
+
+        var parser = new IntMudSourceParser();
+
+        var compiledCount = 0;
+        var errorCount = 0;
+        var fileIndex = 0;
+        foreach (var file in allFiles)
+        {
+            fileIndex++;
+            _logger.LogDebug("Compiling [{Index}/{Total}] {File}...", fileIndex, allFiles.Count, Path.GetFileName(file));
+            try
+            {
+                var source = await File.ReadAllTextAsync(file, Encoding.Latin1, cancellationToken);
                 var ast = parser.Parse(source, file);
 
                 if (ast.Classes.Count > 0)
                 {
                     var unit = BytecodeCompiler.Compile(ast);
                     _compiledUnits[unit.ClassName] = unit;
-                    _logger.LogDebug("Compiled class '{ClassName}' from {File}",
-                        unit.ClassName, Path.GetFileName(file));
+                    compiledCount++;
+                    if (compiledCount % 20 == 0)
+                    {
+                        _logger.LogInformation("Compiled {Count}/{Total} classes...", compiledCount, allFiles.Count);
+                    }
                 }
             }
             catch (Exception ex)
             {
+                errorCount++;
                 _logger.LogError(ex, "Error compiling {File}", file);
             }
+        }
+
+        if (errorCount > 0)
+        {
+            _logger.LogWarning("{ErrorCount} files had compilation errors", errorCount);
         }
 
         _logger.LogInformation("Compiled {Count} classes", _compiledUnits.Count);

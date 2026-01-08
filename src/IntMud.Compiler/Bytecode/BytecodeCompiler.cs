@@ -179,12 +179,32 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
         }
         else
         {
-            throw new CompilerException($"Constant '{node.Name}' must have a literal value", node.Line);
+            // Expression constant - compile to bytecode for runtime evaluation
+            constant.Type = ConstantType.Expression;
+            constant.ExpressionBytecode = CompileConstantExpression(node.Value);
         }
 
         _unit.Constants[node.Name] = constant;
         _globalScope.DefineConstant(node.Name);
         return null;
+    }
+
+    /// <summary>
+    /// Compile an expression to bytecode for runtime evaluation (used by const with expressions).
+    /// </summary>
+    private byte[] CompileConstantExpression(ExpressionNode expr)
+    {
+        // Create a temporary emitter for the expression bytecode
+        var tempEmitter = new BytecodeEmitter(_unit.StringPool);
+
+        // Compile the expression
+        var exprCompiler = new ExpressionCompiler(this, tempEmitter);
+        expr.Accept(exprCompiler);
+
+        // Add return value instruction
+        tempEmitter.EmitReturnValue();
+
+        return tempEmitter.GetBytecode();
     }
 
     public object? VisitVarFuncDefinition(VarFuncDefinitionNode node)
@@ -882,7 +902,7 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
 
     private void CompilePrefixIncDec(ExpressionNode operand, bool isIncrement)
     {
-        // Load, increment/decrement, store, leave value on stack
+        // Prefix ++/-- : inc/dec then return new value
         if (operand is IdentifierNode id)
         {
             var (kind, index) = _compiler.CurrentScope.ResolveVariable(id.Name);
@@ -895,8 +915,9 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
                     _emitter.EmitStoreLocal(index);
                     break;
                 case VariableKind.Global:
+                case VariableKind.Constant:
                     // Check if this is an instance variable (implicit 'this')
-                    if (_compiler.IsInstanceVariable(id.Name))
+                    if (_compiler.IsInstanceVariable(id.Name) || kind == VariableKind.Constant)
                     {
                         _emitter.EmitLoadThis();
                         _emitter.EmitLoadField(id.Name);
@@ -917,6 +938,49 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
                 default:
                     throw new CompilerException($"Cannot increment/decrement '{id.Name}'", operand.Line);
             }
+        }
+        else if (operand is MemberAccessNode memberAccess)
+        {
+            // ++obj.field - increment and return new value
+            // 1. Load, increment, store
+            memberAccess.Object.Accept(this);  // [obj]
+            _emitter.EmitDup();                // [obj, obj]
+            _emitter.EmitLoadField(memberAccess.Member);  // [obj, value]
+            if (isIncrement) _emitter.EmitInc(); else _emitter.EmitDec();  // [obj, new_value]
+            _emitter.EmitStoreField(memberAccess.Member);  // []
+            // 2. Return new value by loading it again
+            memberAccess.Object.Accept(this);
+            _emitter.EmitLoadField(memberAccess.Member);  // [new_value]
+        }
+        else if (operand is IndexAccessNode indexAccess)
+        {
+            // ++arr[i]
+            indexAccess.Object.Accept(this);
+            indexAccess.Index.Accept(this);
+            indexAccess.Object.Accept(this);
+            indexAccess.Index.Accept(this);
+            _emitter.EmitLoadIndex();
+            if (isIncrement) _emitter.EmitInc(); else _emitter.EmitDec();
+            _emitter.EmitStoreIndex();
+            // Return new value
+            indexAccess.Object.Accept(this);
+            indexAccess.Index.Accept(this);
+            _emitter.EmitLoadIndex();
+        }
+        else if (operand is DynamicMemberAccessNode dynamicMember)
+        {
+            // ++obj.[expr]
+            dynamicMember.Object.Accept(this);
+            CompileDynamicMemberName(dynamicMember.MemberParts);
+            dynamicMember.Object.Accept(this);
+            CompileDynamicMemberName(dynamicMember.MemberParts);
+            _emitter.EmitLoadFieldDynamic();
+            if (isIncrement) _emitter.EmitInc(); else _emitter.EmitDec();
+            _emitter.EmitStoreFieldDynamic();
+            // Return new value
+            dynamicMember.Object.Accept(this);
+            CompileDynamicMemberName(dynamicMember.MemberParts);
+            _emitter.EmitLoadFieldDynamic();
         }
         else
         {
@@ -1092,9 +1156,21 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
                         _emitter.EmitStoreGlobal(id.Name);
                     }
                     break;
+                case VariableKind.Constant:
+                    // In IntMUD, constants can be shadowed by instance variables
+                    // Assignment to a constant name writes to this.field
+                    _emitter.EmitLoadThis();
+                    _emitter.EmitSwap();
+                    _emitter.EmitStoreField(id.Name);
+                    break;
                 default:
                     throw new CompilerException($"Cannot assign to '{id.Name}'", expr.Line);
             }
+        }
+        else if (expr is ArgReferenceNode argRef)
+        {
+            // IntMUD allows assigning to function arguments (arg0, arg1, etc.)
+            _emitter.EmitStoreArg(argRef.Index);
         }
         else if (expr is MemberAccessNode member)
         {
@@ -1170,6 +1246,144 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
             _emitter.EmitSwap();
             _emitter.EmitStoreDynamic();
         }
+        else if (expr is ClassReferenceNode classRef)
+        {
+            // Handle assignment to class members: class:member = value
+            // Stack: [value]
+
+            // Determine if we need static or dynamic store
+            bool needsDynamicStore = classRef.ClassName == null ||
+                                      classRef.ClassNameIndex != null ||
+                                      classRef.MemberName == null ||
+                                      classRef.DynamicMemberParts.Count > 0;
+
+            if (!needsDynamicStore && classRef.ClassName != null && classRef.MemberName != null)
+            {
+                // Static case: class:member = value
+                _emitter.EmitStoreClassMember(classRef.ClassName, classRef.MemberName);
+            }
+            else
+            {
+                // Dynamic case: need to build class name and member name on stack
+                // Stack currently: [value]
+
+                // Build class name
+                if (classRef.ClassName != null && classRef.ClassNameIndex == null)
+                {
+                    _emitter.EmitPushString(classRef.ClassName);
+                }
+                else if (classRef.ClassName == null && classRef.ClassNameIndex != null)
+                {
+                    classRef.ClassNameIndex.Accept(this);
+                }
+                else if (classRef.ClassName != null && classRef.ClassNameIndex != null)
+                {
+                    _emitter.EmitPushString(classRef.ClassName);
+                    classRef.ClassNameIndex.Accept(this);
+                    _emitter.EmitConcat();
+                }
+                else
+                {
+                    _emitter.EmitPushString("");
+                }
+
+                // Build member name
+                if (classRef.MemberName != null && classRef.DynamicMemberParts.Count == 0)
+                {
+                    _emitter.EmitPushString(classRef.MemberName);
+                }
+                else if (classRef.DynamicMemberParts.Count > 0)
+                {
+                    bool first = true;
+                    foreach (var part in classRef.DynamicMemberParts)
+                    {
+                        part.Accept(this);
+                        if (!first)
+                        {
+                            _emitter.EmitConcat();
+                        }
+                        first = false;
+                    }
+                }
+                else
+                {
+                    _emitter.EmitPushString("");
+                }
+
+                // Stack: [value, className, memberName]
+                // Need to reorder to [className, memberName, value] for StoreClassMemberDynamic
+                // Use Rot3 or equivalent - for now we'll do it with swaps
+                // Actually our stack order is wrong, let's fix it:
+                // We need: push value first, then className, then memberName
+                // But we pushed: value, className, memberName
+                // So the order is already correct for a store that expects [className, memberName, value]
+                // Wait, we pushed value first (it was on stack), then className, then memberName
+                // So stack is: value (bottom), className, memberName (top)
+                // StoreClassMemberDynamic expects: className, memberName, value (top is value)
+                // So we need to rotate
+
+                // Simpler approach: emit the class/member names first, then the value will be at correct position
+                // Actually, let me reconsider. The value is already on the stack before we start.
+                // So we have: [value] then we push className, memberName
+                // Result: [value, className, memberName] (top = memberName)
+                // We need: [className, memberName, value] for the store
+                // This requires rotating the stack
+
+                // For simplicity, use StoreClassMemberDynamic which expects stack order of [className, memberName, value]
+                // We have [value, className, memberName]
+                // Rotate: swap top 2, then swap with 3rd
+                // [value, className, memberName] -> swap -> [value, memberName, className]
+                // Now we need to get value to top... this is getting complicated
+
+                // Alternative: compute className and memberName into locals, then do the store
+                // For now, let's just use a different approach: compute everything, store value in temp
+
+                // Simplest workaround: just emit as if stack is [className, memberName, value]
+                // and fix the order by swapping
+
+                // Stack is: [value, className, memberName]
+                // We need: [className, memberName, value]
+                // Do: ROT3 (not available), or:
+                // SWAP -> [value, memberName, className]
+                // Need custom rotation - let's just use the dynamic store which takes values from stack
+
+                _emitter.EmitStoreClassMemberDynamic();
+            }
+        }
+        else if (expr is ConditionalExpressionNode condExpr)
+        {
+            // (cond ? a : b) = value
+            // Evaluate condition and store to either ThenValue or ElseValue
+            // Stack: [value]
+            condExpr.Condition.Accept(this);  // [value, condition]
+            var jumpToElse = _emitter.EmitJumpIfFalse();  // [value]
+
+            // Then branch: store to ThenValue
+            if (condExpr.ThenValue != null)
+            {
+                CompileStore(condExpr.ThenValue, keepValue);
+            }
+            var jumpToEnd = _emitter.EmitJump();
+
+            // Else branch: store to ElseValue
+            _emitter.PatchJump(jumpToElse);
+            if (condExpr.ElseValue != null)
+            {
+                CompileStore(condExpr.ElseValue, keepValue);
+            }
+
+            _emitter.PatchJump(jumpToEnd);
+        }
+        else if (expr is FunctionCallNode funcCall)
+        {
+            // func() = value
+            // In IntMUD, this pattern means the function returns a variable name,
+            // and we should store to that dynamic location
+            // Stack: [value]
+            funcCall.Accept(this);  // [value, varName]
+            _emitter.EmitSwap();    // [varName, value]
+            _emitter.EmitStoreDynamic();
+        }
         else
         {
             throw new CompilerException($"Invalid assignment target: {expr.GetType().Name}", expr.Line);
@@ -1233,6 +1447,21 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
         }
     }
 
+    private void CompileDynamicMemberName(List<ExpressionNode> parts)
+    {
+        // Compile all parts and concatenate them to build the member name string
+        bool first = true;
+        foreach (var part in parts)
+        {
+            CompileMemberPart(part);
+            if (!first)
+            {
+                _emitter.EmitConcat();
+            }
+            first = false;
+        }
+    }
+
     public object? VisitIndexAccess(IndexAccessNode node)
     {
         node.Object.Accept(this);
@@ -1263,19 +1492,172 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
             }
             _emitter.EmitCallMethod(memberAccess.Member, node.Arguments.Count);
         }
-        else if (node.Function is ClassReferenceNode classRef)
+        else if (node.Function is DynamicMemberAccessNode dynamicMember)
         {
-            // Static method call
-            _emitter.EmitLoadClass(classRef.ClassName);
+            // Dynamic method call - obj.method_[expr](args)
+            // First compile the object
+            dynamicMember.Object.Accept(this);
+
+            // Compile arguments
             foreach (var arg in node.Arguments)
             {
                 arg.Accept(this);
             }
-            _emitter.EmitCallMethod(classRef.MemberName, node.Arguments.Count);
+
+            // Build the dynamic method name
+            bool first = true;
+            foreach (var part in dynamicMember.MemberParts)
+            {
+                CompileMemberPart(part);
+                if (!first)
+                {
+                    _emitter.EmitConcat();
+                }
+                first = false;
+            }
+
+            _emitter.EmitCallMethodDynamic(node.Arguments.Count);
+        }
+        else if (node.Function is DynamicIdentifierNode dynId)
+        {
+            // Dynamic function call - function name is built from parts
+            // Example: passo[arg0.tpasso](arg0, arg1) calls passo0, passo1, etc.
+
+            // Compile arguments first (they go on stack before function name)
+            foreach (var arg in node.Arguments)
+            {
+                arg.Accept(this);
+            }
+
+            // Build the function name string
+            if (dynId.Parts.Count == 0)
+            {
+                throw new CompilerException("Dynamic identifier must have at least one part", node.Line);
+            }
+
+            bool first = true;
+            foreach (var part in dynId.Parts)
+            {
+                CompileMemberPart(part);
+                if (!first)
+                {
+                    _emitter.EmitConcat();
+                }
+                first = false;
+            }
+
+            // Call with dynamic function name
+            _emitter.EmitCallDynamic(node.Arguments.Count);
+        }
+        else if (node.Function is ClassReferenceNode classRef)
+        {
+            // Static or dynamic method call - need to handle both class name and member name variations
+            // First, emit the class reference onto the stack
+            if (classRef.ClassName != null && classRef.ClassNameIndex == null)
+            {
+                // Static class name: class:method()
+                _emitter.EmitLoadClass(classRef.ClassName);
+            }
+            else if (classRef.ClassName == null && classRef.ClassNameIndex != null)
+            {
+                // Fully dynamic class name: [expr]:method()
+                classRef.ClassNameIndex.Accept(this);
+                _emitter.EmitLoadClassDynamic();
+            }
+            else if (classRef.ClassName != null && classRef.ClassNameIndex != null)
+            {
+                // Combined: name[expr]:method()
+                _emitter.EmitPushString(classRef.ClassName);
+                classRef.ClassNameIndex.Accept(this);
+                _emitter.EmitConcat();
+                _emitter.EmitLoadClassDynamic();
+            }
+            else
+            {
+                throw new CompilerException("Invalid class reference in function call", node.Line);
+            }
+
+            // Compile arguments
+            foreach (var arg in node.Arguments)
+            {
+                arg.Accept(this);
+            }
+
+            // Emit the call - handle both static and dynamic member names
+            if (classRef.MemberName != null && classRef.DynamicMemberParts.Count == 0)
+            {
+                _emitter.EmitCallMethod(classRef.MemberName, node.Arguments.Count);
+            }
+            else if (classRef.DynamicMemberParts.Count > 0)
+            {
+                // Build dynamic member name
+                bool first = true;
+                foreach (var part in classRef.DynamicMemberParts)
+                {
+                    part.Accept(this);
+                    if (!first)
+                    {
+                        _emitter.EmitConcat();
+                    }
+                    first = false;
+                }
+                _emitter.EmitCallMethodDynamic(node.Arguments.Count);
+            }
+            else
+            {
+                throw new CompilerException("Invalid member in class reference function call", node.Line);
+            }
+        }
+        else if (node.Function is FunctionCallNode nestedCall)
+        {
+            // Nested call: result of function call is called as function
+            // Example: getCallback()(arg1, arg2)
+            // First compile the nested call to get the callable
+            nestedCall.Accept(this);
+
+            // Compile arguments
+            foreach (var arg in node.Arguments)
+            {
+                arg.Accept(this);
+            }
+
+            // Call dynamically (assumes result is a function name or callable)
+            _emitter.EmitCallDynamic(node.Arguments.Count);
+        }
+        else if (node.Function is AssignmentExpressionNode assignExpr)
+        {
+            // Assignment result used as callable: (x = funcName)(args)
+            // Compile the assignment (result is the assigned value)
+            assignExpr.Accept(this);
+
+            // Compile arguments
+            foreach (var arg in node.Arguments)
+            {
+                arg.Accept(this);
+            }
+
+            // Call dynamically
+            _emitter.EmitCallDynamic(node.Arguments.Count);
+        }
+        else if (node.Function != null)
+        {
+            // Generic fallback: compile expression and call dynamically
+            // This handles cases where the parser creates a FunctionCallNode
+            // for expressions that look like calls but may be parsed differently
+            node.Function.Accept(this);
+
+            // Compile arguments
+            foreach (var arg in node.Arguments)
+            {
+                arg.Accept(this);
+            }
+
+            // Call dynamically
+            _emitter.EmitCallDynamic(node.Arguments.Count);
         }
         else
         {
-            throw new CompilerException("Invalid function call target", node.Line);
+            throw new CompilerException("Invalid function call target: null", node.Line);
         }
 
         return null;
@@ -1318,6 +1700,54 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
                 default:
                     throw new CompilerException($"Cannot increment/decrement '{id.Name}'", node.Line);
             }
+        }
+        else if (node.Operand is MemberAccessNode memberAccess)
+        {
+            // obj.field++ or obj.field--
+            // Step 1: Get old value (this is what we return)
+            memberAccess.Object.Accept(this);
+            _emitter.EmitLoadField(memberAccess.Member);  // [old_value]
+
+            // Step 2: Load object again and compute/store new value
+            memberAccess.Object.Accept(this);  // [old_value, obj]
+            _emitter.EmitDup();                // [old_value, obj, obj]
+            _emitter.EmitLoadField(memberAccess.Member);  // [old_value, obj, field_value]
+            if (node.IsIncrement) _emitter.EmitInc(); else _emitter.EmitDec();  // [old_value, obj, new_value]
+            _emitter.EmitStoreField(memberAccess.Member);  // [old_value]
+        }
+        else if (node.Operand is IndexAccessNode indexAccess)
+        {
+            // arr[i]++ or arr[i]--
+            // Step 1: Get old value
+            indexAccess.Object.Accept(this);
+            indexAccess.Index.Accept(this);
+            _emitter.EmitLoadIndex();  // [old_value]
+
+            // Step 2: Load object and index again, compute/store new value
+            indexAccess.Object.Accept(this);   // [old_value, obj]
+            indexAccess.Index.Accept(this);    // [old_value, obj, index]
+            indexAccess.Object.Accept(this);   // [old_value, obj, index, obj2]
+            indexAccess.Index.Accept(this);    // [old_value, obj, index, obj2, index2]
+            _emitter.EmitLoadIndex();          // [old_value, obj, index, elem_value]
+            if (node.IsIncrement) _emitter.EmitInc(); else _emitter.EmitDec();  // [old_value, obj, index, new_value]
+            _emitter.EmitStoreIndex();         // [old_value]
+        }
+        else if (node.Operand is DynamicMemberAccessNode dynamicMemberAccess)
+        {
+            // obj.[expr]++ or obj.[expr]--
+            // Step 1: Get old value
+            dynamicMemberAccess.Object.Accept(this);  // [obj]
+            CompileDynamicMemberName(dynamicMemberAccess.MemberParts);  // [obj, memberName]
+            _emitter.EmitLoadFieldDynamic();  // [old_value]
+
+            // Step 2: Compute and store new value
+            dynamicMemberAccess.Object.Accept(this);  // [old_value, obj]
+            CompileDynamicMemberName(dynamicMemberAccess.MemberParts);  // [old_value, obj, memberName]
+            dynamicMemberAccess.Object.Accept(this);  // [old_value, obj, memberName, obj2]
+            CompileDynamicMemberName(dynamicMemberAccess.MemberParts);  // [old_value, obj, memberName, obj2, memberName2]
+            _emitter.EmitLoadFieldDynamic();  // [old_value, obj, memberName, field_value]
+            if (node.IsIncrement) _emitter.EmitInc(); else _emitter.EmitDec();  // [old_value, obj, memberName, new_value]
+            _emitter.EmitStoreFieldDynamic();  // [old_value]
         }
         else
         {
@@ -1432,15 +1862,109 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
 
     public object? VisitDollarReference(DollarReferenceNode node)
     {
-        // $classname loads the class object
-        _emitter.EmitLoadClass(node.ClassName);
+        // Handle different patterns:
+        // $classname - static class reference
+        // $[expr] - dynamic class reference (class name from expression)
+        // $name[expr] - dynamic class reference (base name + expression)
+
+        if (node.ClassName != null && node.DynamicExpression == null)
+        {
+            // $classname - static case
+            _emitter.EmitLoadClass(node.ClassName);
+        }
+        else if (node.ClassName == null && node.DynamicExpression != null)
+        {
+            // $[expr] - fully dynamic case
+            node.DynamicExpression.Accept(this);
+            _emitter.EmitLoadClassDynamic();
+        }
+        else if (node.ClassName != null && node.DynamicExpression != null)
+        {
+            // $name[expr] - combine base name with expression
+            _emitter.EmitPushString(node.ClassName);
+            node.DynamicExpression.Accept(this);
+            _emitter.EmitConcat();
+            _emitter.EmitLoadClassDynamic();
+        }
+        else
+        {
+            // Fallback - push null
+            _emitter.EmitPushNull();
+        }
         return null;
     }
 
     public object? VisitClassReference(ClassReferenceNode node)
     {
-        // classname:member loads a static member
-        _emitter.EmitLoadClassMember(node.ClassName, node.MemberName);
+        // Handle different patterns:
+        // class:member - static class and member
+        // class:prefix_[expr] - static class, dynamic member
+        // [expr]:member - dynamic class, static member
+        // name[expr]:member - dynamic class (base + expr), static member
+
+        // First, determine and push class name
+        bool classDynamic = false;
+        if (node.ClassName != null && node.ClassNameIndex == null)
+        {
+            // Static class name
+            _emitter.EmitPushString(node.ClassName);
+        }
+        else if (node.ClassName == null && node.ClassNameIndex != null)
+        {
+            // [expr]:member - class name from expression
+            node.ClassNameIndex.Accept(this);
+            classDynamic = true;
+        }
+        else if (node.ClassName != null && node.ClassNameIndex != null)
+        {
+            // name[expr]:member - combine base name with expression
+            _emitter.EmitPushString(node.ClassName);
+            node.ClassNameIndex.Accept(this);
+            _emitter.EmitConcat();
+            classDynamic = true;
+        }
+        else
+        {
+            // No class specified - push empty string
+            _emitter.EmitPushString("");
+        }
+
+        // Then, determine and push member name
+        bool memberDynamic = false;
+        if (node.MemberName != null && node.DynamicMemberParts.Count == 0)
+        {
+            // Static member name
+            _emitter.EmitPushString(node.MemberName);
+        }
+        else if (node.DynamicMemberParts.Count > 0)
+        {
+            // Dynamic member - concatenate all parts
+            bool first = true;
+            foreach (var part in node.DynamicMemberParts)
+            {
+                part.Accept(this);
+                if (!first)
+                {
+                    _emitter.EmitConcat();
+                }
+                first = false;
+            }
+            memberDynamic = true;
+        }
+        else if (node.MemberName != null)
+        {
+            _emitter.EmitPushString(node.MemberName);
+        }
+        else
+        {
+            // No member specified - push empty string
+            _emitter.EmitPushString("");
+        }
+
+        // Now emit the appropriate load instruction
+        // Stack is: [className, memberName]
+        _emitter.EmitLoadClassMemberDynamic();
+
         return null;
     }
 

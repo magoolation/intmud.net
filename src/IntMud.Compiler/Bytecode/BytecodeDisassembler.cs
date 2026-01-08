@@ -138,6 +138,11 @@ public static class BytecodeDisassembler
                     sb.Append($" arg{argIndex}");
                     break;
 
+                case BytecodeOp.StoreArg:
+                    var storeArgIndex = bytecode[offset++];
+                    sb.Append($" arg{storeArgIndex}");
+                    break;
+
                 case BytecodeOp.Jump:
                 case BytecodeOp.JumpIfTrue:
                 case BytecodeOp.JumpIfFalse:
@@ -163,6 +168,16 @@ public static class BytecodeDisassembler
                     var methodArgCount = bytecode[offset++];
                     var methodName = methodIndex < stringPool.Count ? stringPool[methodIndex] : "?";
                     sb.Append($" [{methodIndex}] .{methodName}({methodArgCount})");
+                    break;
+
+                case BytecodeOp.CallMethodDynamic:
+                    var dynMethodArgCount = bytecode[offset++];
+                    sb.Append($" .dynamic({dynMethodArgCount})");
+                    break;
+
+                case BytecodeOp.CallDynamic:
+                    var dynCallArgCount = bytecode[offset++];
+                    sb.Append($" dynamic({dynCallArgCount})");
                     break;
 
                 case BytecodeOp.CallBuiltin:

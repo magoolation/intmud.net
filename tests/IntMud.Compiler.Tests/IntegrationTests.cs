@@ -2937,5 +2937,248 @@ func test
         Assert.Empty(failedFiles);
     }
 
+    [Fact]
+    public void CompileAndExecute_AllMudFiles_Works()
+    {
+        // Test compiling and executing initialization of all MUD files
+        var mudPath = @"C:\Users\alecosta\source\repos\mud\intmud\mud";
+
+        if (!Directory.Exists(mudPath))
+        {
+            _output.WriteLine("MUD directory not found, skipping test");
+            return;
+        }
+
+        var files = Directory.GetFiles(mudPath, "*.int", SearchOption.AllDirectories);
+        _output.WriteLine($"Found {files.Length} .int files");
+
+        var parser = new IntMudSourceParser();
+        var compiledUnits = new Dictionary<string, IntMud.Compiler.Bytecode.CompiledUnit>(StringComparer.OrdinalIgnoreCase);
+        var parseErrors = new List<(string file, string error)>();
+        var compileErrors = new List<(string file, string error)>();
+
+        // Phase 1: Parse and compile all files
+        foreach (var file in files)
+        {
+            try
+            {
+                var source = IntMudSourceParser.ReadSourceFile(file);
+                var ast = parser.Parse(source, file);
+
+                // Compile the file (returns one unit for the first/main class)
+                try
+                {
+                    var unit = BytecodeCompiler.Compile(ast);
+                    compiledUnits[unit.ClassName] = unit;
+                }
+                catch (Exception ex)
+                {
+                    var relativePath = file.Replace(mudPath + "\\", "");
+                    compileErrors.Add((relativePath, ex.Message));
+                }
+            }
+            catch (Exception ex)
+            {
+                var relativePath = file.Replace(mudPath + "\\", "");
+                parseErrors.Add((relativePath, ex.Message));
+            }
+        }
+
+        _output.WriteLine($"\n=== PARSE RESULTS ===");
+        _output.WriteLine($"Parse errors: {parseErrors.Count}");
+        if (parseErrors.Count > 0)
+        {
+            foreach (var (file, error) in parseErrors.Take(10))
+            {
+                _output.WriteLine($"  {file}: {error.Split('\n')[0]}");
+            }
+            if (parseErrors.Count > 10)
+                _output.WriteLine($"  ... and {parseErrors.Count - 10} more");
+        }
+
+        _output.WriteLine($"\n=== COMPILE RESULTS ===");
+        _output.WriteLine($"Successfully compiled: {compiledUnits.Count} classes");
+        _output.WriteLine($"Compile errors: {compileErrors.Count}");
+        if (compileErrors.Count > 0)
+        {
+            foreach (var (file, error) in compileErrors.Take(10))
+            {
+                _output.WriteLine($"  {file}: {error.Split('\n')[0]}");
+            }
+            if (compileErrors.Count > 10)
+                _output.WriteLine($"  ... and {compileErrors.Count - 10} more");
+        }
+
+        // Phase 2: Try to create interpreter and test some basic functions
+        _output.WriteLine($"\n=== RUNTIME TEST ===");
+        var runtimeErrors = new List<(string className, string funcName, string error)>();
+        var successfulExecutions = 0;
+
+        // Test calling 'ini' function on each class that has it
+        foreach (var (className, unit) in compiledUnits.Take(50)) // Test first 50 classes
+        {
+            if (unit.Functions.ContainsKey("ini"))
+            {
+                try
+                {
+                    var interpreter = new BytecodeInterpreter(unit, compiledUnits);
+                    var obj = new BytecodeRuntimeObject(unit);
+
+                    // Try executing ini function
+                    interpreter.ExecuteFunctionWithThis(unit.Functions["ini"], obj, unit, Array.Empty<RuntimeValue>());
+                    successfulExecutions++;
+                }
+                catch (Exception ex)
+                {
+                    runtimeErrors.Add((className, "ini", ex.Message));
+                }
+            }
+        }
+
+        _output.WriteLine($"Successful ini executions: {successfulExecutions}");
+        _output.WriteLine($"Runtime errors: {runtimeErrors.Count}");
+
+        if (runtimeErrors.Count > 0)
+        {
+            _output.WriteLine("\nRuntime errors (showing unique error types):");
+            var uniqueErrors = runtimeErrors
+                .GroupBy(e => e.error.Split('\n')[0])
+                .OrderByDescending(g => g.Count())
+                .Take(15);
+
+            foreach (var group in uniqueErrors)
+            {
+                _output.WriteLine($"  [{group.Count()}x] {group.Key}");
+                _output.WriteLine($"       Classes: {string.Join(", ", group.Take(3).Select(e => e.className))}");
+            }
+        }
+
+        // Report summary
+        _output.WriteLine($"\n=== SUMMARY ===");
+        _output.WriteLine($"Total .int files: {files.Length}");
+        _output.WriteLine($"Compiled classes: {compiledUnits.Count}");
+        _output.WriteLine($"Parse errors: {parseErrors.Count}");
+        _output.WriteLine($"Compile errors: {compileErrors.Count}");
+        _output.WriteLine($"Runtime errors: {runtimeErrors.Count}");
+        _output.WriteLine($"Successful executions: {successfulExecutions}");
+
+        // This test documents current compatibility - we allow some errors for now
+        // as we progressively improve compatibility
+        Assert.True(compiledUnits.Count > 50, "Should compile at least 50 classes");
+    }
+
+    [Fact]
+    public void Audit_MissingBuiltinFunctions()
+    {
+        // Audit which builtin functions are called but might not be implemented
+        var mudPath = @"C:\Users\alecosta\source\repos\mud\intmud\mud";
+
+        if (!Directory.Exists(mudPath))
+        {
+            _output.WriteLine("MUD directory not found, skipping test");
+            return;
+        }
+
+        var files = Directory.GetFiles(mudPath, "*.int", SearchOption.AllDirectories);
+        var functionCalls = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        // Simple regex to find function calls: identifier followed by (
+        var funcCallRegex = new System.Text.RegularExpressions.Regex(@"\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\(",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        foreach (var file in files)
+        {
+            try
+            {
+                var source = IntMudSourceParser.ReadSourceFile(file);
+                var matches = funcCallRegex.Matches(source);
+
+                foreach (System.Text.RegularExpressions.Match match in matches)
+                {
+                    var funcName = match.Groups[1].Value.ToLowerInvariant();
+                    // Skip common keywords
+                    if (funcName is "se" or "senao" or "enquanto" or "epara" or "para" or "func" or "varfunc"
+                        or "classe" or "herda" or "const" or "ret" or "casovar" or "casose" or "casofim")
+                        continue;
+
+                    functionCalls.TryGetValue(funcName, out var count);
+                    functionCalls[funcName] = count + 1;
+                }
+            }
+            catch
+            {
+                // Ignore parse errors for this audit
+            }
+        }
+
+        // Known implemented functions
+        var implementedFunctions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // Text functions
+            "txt", "txt1", "txt2", "txtsub", "txtsublin", "txtfim", "txtmai", "txtmin", "txtmaiini", "txtmaimin",
+            "txtproc", "txtprocmai", "txtprocdif", "txtproclin", "txttroca", "txttrocamai", "txttrocadif",
+            "txtnulo", "txtnulo2", "txtremove", "txtconv", "txthex", "txtdec", "txtcod", "txtchr",
+            "txtcor", "txte", "txts", "txtrev", "txtcopiamai", "txtrepete", "txtnum", "txtsepara",
+            "txtbit", "txtbith", "txtlen", "len", "length", "substr", "substring", "upper", "toupper",
+            "lower", "tolower", "trim", "ltrim", "rtrim", "indexof", "pos", "lastindexof", "replace",
+            "startswith", "endswith", "contains", "concat", "join", "split", "char", "chr", "ord", "asc",
+            "repeat", "reverse", "padleft", "lpad", "padright", "rpad",
+
+            // Math functions
+            "num", "int", "real", "abs", "intabs", "max", "intmax", "min", "intmin", "div", "intdiv",
+            "mod", "intmod", "avg", "intmedia", "sum", "intsoma", "intpos", "intsub", "intsublin",
+            "intchr", "inttotal", "intbit", "intbith",
+            "sin", "matsin", "cos", "matcos", "tan", "mattan", "asin", "matasin", "acos", "matacos",
+            "atan", "matatan", "atan2", "matatan2", "sqrt", "matsqrt", "pow", "matpow", "mathpow",
+            "log", "matlog", "log10", "matlog10", "exp", "matexp", "floor", "matfloor", "matbaixo",
+            "ceil", "matceil", "matcima", "round", "matround", "rand", "matrand", "random", "randint",
+            "matrandint", "pi", "matpi", "e", "mate", "matrad", "matdeg", "matraiz",
+
+            // Array functions
+            "tam", "strlen", "vetor", "array", "push", "arrpush", "inserir", "pop", "arrpop", "remover",
+            "shift", "arrshift", "unshift", "arrunshift", "arrindexof", "arrcontains", "clear", "arrclear",
+            "limpar", "arrreverse", "arrlen", "arrlength", "count",
+
+            // Object functions
+            "criar", "create", "new", "apagar", "delete", "ref", "objantes", "objdepois", "vartroca",
+
+            // Type checking
+            "nulo", "isnull", "enulo", "isnum", "enumero", "istext", "etexto", "isarray", "evetor",
+            "isobject", "eobjeto", "typeof", "tipode",
+
+            // I/O
+            "escreva", "escreve", "print", "echo", "escrevaln", "println", "leia", "ler", "read", "input",
+
+            // Time
+            "tempo", "time", "tempoms", "timems", "data", "date", "hora", "hour", "minuto", "minute",
+            "segundo", "second", "dia", "day", "mes", "month", "ano", "year", "diasemana", "weekday",
+
+            // Utility
+            "args", "formato", "format"
+        };
+
+        var missingFunctions = functionCalls
+            .Where(kv => !implementedFunctions.Contains(kv.Key) && kv.Value >= 5) // Functions called 5+ times
+            .OrderByDescending(kv => kv.Value)
+            .ToList();
+
+        _output.WriteLine("=== FUNCTION CALL FREQUENCY (Top 50) ===");
+        foreach (var (func, count) in functionCalls.OrderByDescending(kv => kv.Value).Take(50))
+        {
+            var status = implementedFunctions.Contains(func) ? "✓" : "✗";
+            _output.WriteLine($"  {status} {func}: {count} calls");
+        }
+
+        _output.WriteLine($"\n=== POTENTIALLY MISSING FUNCTIONS (5+ calls) ===");
+        foreach (var (func, count) in missingFunctions.Take(30))
+        {
+            _output.WriteLine($"  {func}: {count} calls");
+        }
+
+        _output.WriteLine($"\nTotal unique function names: {functionCalls.Count}");
+        _output.WriteLine($"Implemented: {implementedFunctions.Count}");
+        _output.WriteLine($"Potentially missing (5+ calls): {missingFunctions.Count}");
+    }
+
     #endregion
 }

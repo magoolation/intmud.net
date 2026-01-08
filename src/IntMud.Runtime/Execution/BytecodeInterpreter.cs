@@ -224,6 +224,14 @@ public sealed class BytecodeInterpreter
                         Push(argIdx < arguments.Length ? arguments[argIdx] : RuntimeValue.Null);
                         break;
 
+                    case BytecodeOp.StoreArg:
+                        var storeArgIdx = bytecode[_ip++];
+                        if (storeArgIdx < arguments.Length)
+                            arguments[storeArgIdx] = Pop();
+                        else
+                            Pop(); // Discard value if arg doesn't exist
+                        break;
+
                     case BytecodeOp.LoadArgCount:
                         Push(RuntimeValue.FromInt(arguments.Length));
                         break;
@@ -465,6 +473,18 @@ public sealed class BytecodeInterpreter
                         ExecuteMethodCall(methodName, argCount);
                         break;
 
+                    case BytecodeOp.CallMethodDynamic:
+                        var dynamicMethodName = Pop().AsString();
+                        argCount = bytecode[_ip++];
+                        ExecuteMethodCall(dynamicMethodName, argCount);
+                        break;
+
+                    case BytecodeOp.CallDynamic:
+                        var dynamicFuncName = Pop().AsString();
+                        argCount = bytecode[_ip++];
+                        ExecuteCall(dynamicFuncName, argCount);
+                        break;
+
                     case BytecodeOp.CallBuiltin:
                         var builtinId = ReadUInt16(bytecode);
                         argCount = bytecode[_ip++];
@@ -496,7 +516,8 @@ public sealed class BytecodeInterpreter
                         break;
 
                     case BytecodeOp.Delete:
-                        Pop(); // Just discard for now
+                        Pop(); // Discard the object to delete
+                        Push(RuntimeValue.Null); // Delete expression evaluates to null
                         break;
 
                     case BytecodeOp.TypeOf:
@@ -521,6 +542,35 @@ public sealed class BytecodeInterpreter
                         className = stringPool[classIdx];
                         var memberName = stringPool[memberIdx];
                         Push(LoadClassMember(className, memberName));
+                        break;
+
+                    case BytecodeOp.LoadClassDynamic:
+                        // Class name is on stack as string
+                        className = Pop().AsString();
+                        Push(LoadClass(className));
+                        break;
+
+                    case BytecodeOp.LoadClassMemberDynamic:
+                        // Stack: [className, memberName]
+                        memberName = Pop().AsString();
+                        className = Pop().AsString();
+                        Push(LoadClassMember(className, memberName));
+                        break;
+
+                    case BytecodeOp.StoreClassMember:
+                        classIdx = ReadUInt16(bytecode);
+                        memberIdx = ReadUInt16(bytecode);
+                        className = stringPool[classIdx];
+                        memberName = stringPool[memberIdx];
+                        StoreClassMember(className, memberName, Pop());
+                        break;
+
+                    case BytecodeOp.StoreClassMemberDynamic:
+                        // Stack: [value, className, memberName]
+                        memberName = Pop().AsString();
+                        className = Pop().AsString();
+                        var storeValue = Pop();
+                        StoreClassMember(className, memberName, storeValue);
                         break;
 
                     // Special
@@ -627,8 +677,10 @@ public sealed class BytecodeInterpreter
             "maiusculo" or "mai" when obj.Type == RuntimeValueType.String => RuntimeValue.FromString(obj.AsString().ToUpperInvariant()),
             "minusculo" or "min" when obj.Type == RuntimeValueType.String => RuntimeValue.FromString(obj.AsString().ToLowerInvariant()),
 
-            // Array properties
-            "tamanho" or "tam" when obj.Type == RuntimeValueType.Array => RuntimeValue.FromInt(obj.Length),
+            // Array/list properties - ini returns first element, fim returns last
+            "tamanho" or "tam" or "total" when obj.Type == RuntimeValueType.Array => RuntimeValue.FromInt(obj.Length),
+            "ini" or "primeiro" or "first" when obj.Type == RuntimeValueType.Array => obj.Length > 0 ? obj.GetIndex(0) : RuntimeValue.Null,
+            "fim" or "ultimo" or "last" when obj.Type == RuntimeValueType.Array => obj.Length > 0 ? obj.GetIndex(obj.Length - 1) : RuntimeValue.Null,
 
             _ => RuntimeValue.Null
         };
@@ -1002,6 +1054,14 @@ public sealed class BytecodeInterpreter
                     Push(argIdx < arguments.Length ? arguments[argIdx] : RuntimeValue.Null);
                     break;
 
+                case BytecodeOp.StoreArg:
+                    var storeArgIdx = bytecode[_ip++];
+                    if (storeArgIdx < arguments.Length)
+                        arguments[storeArgIdx] = Pop();
+                    else
+                        Pop(); // Discard value if arg doesn't exist
+                    break;
+
                 case BytecodeOp.LoadArgCount:
                     Push(RuntimeValue.FromInt(arguments.Length));
                     break;
@@ -1225,6 +1285,18 @@ public sealed class BytecodeInterpreter
                     ExecuteMethodCall(methodName, argCount);
                     break;
 
+                case BytecodeOp.CallMethodDynamic:
+                    var dynamicMethodName = Pop().AsString();
+                    argCount = bytecode[_ip++];
+                    ExecuteMethodCall(dynamicMethodName, argCount);
+                    break;
+
+                case BytecodeOp.CallDynamic:
+                    var dynamicFuncName = Pop().AsString();
+                    argCount = bytecode[_ip++];
+                    ExecuteCall(dynamicFuncName, argCount);
+                    break;
+
                 case BytecodeOp.Call:
                     var funcName = stringPool[ReadUInt16(bytecode)];
                     argCount = bytecode[_ip++];
@@ -1257,6 +1329,53 @@ public sealed class BytecodeInterpreter
                 case BytecodeOp.Line:
                     // Line number marker for debugging - skip 2 bytes
                     _ip += 2;
+                    break;
+
+                case BytecodeOp.LoadClass:
+                    var className = stringPool[ReadUInt16(bytecode)];
+                    Push(LoadClass(className));
+                    break;
+
+                case BytecodeOp.LoadClassMember:
+                    var classIdx = ReadUInt16(bytecode);
+                    var memberIdx = ReadUInt16(bytecode);
+                    className = stringPool[classIdx];
+                    var memberName = stringPool[memberIdx];
+                    Push(LoadClassMember(className, memberName));
+                    break;
+
+                case BytecodeOp.LoadClassDynamic:
+                    // Class name is on stack as string
+                    className = Pop().AsString();
+                    Push(LoadClass(className));
+                    break;
+
+                case BytecodeOp.LoadClassMemberDynamic:
+                    // Stack: [className, memberName]
+                    memberName = Pop().AsString();
+                    className = Pop().AsString();
+                    Push(LoadClassMember(className, memberName));
+                    break;
+
+                case BytecodeOp.StoreClassMember:
+                    classIdx = ReadUInt16(bytecode);
+                    memberIdx = ReadUInt16(bytecode);
+                    className = stringPool[classIdx];
+                    memberName = stringPool[memberIdx];
+                    StoreClassMember(className, memberName, Pop());
+                    break;
+
+                case BytecodeOp.StoreClassMemberDynamic:
+                    // Stack: [value, className, memberName]
+                    memberName = Pop().AsString();
+                    className = Pop().AsString();
+                    var storeValue = Pop();
+                    StoreClassMember(className, memberName, storeValue);
+                    break;
+
+                case BytecodeOp.Delete:
+                    Pop(); // Discard the object to delete
+                    Push(RuntimeValue.Null); // Delete expression evaluates to null
                     break;
 
                 default:
@@ -1309,7 +1428,37 @@ public sealed class BytecodeInterpreter
         switch (name.ToLowerInvariant())
         {
             case "txt":
+                // txt(value) - convert to string
+                // txt(value, n) - get first n characters
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var n = (int)args[1].AsInt();
+                    if (n <= 0) return RuntimeValue.FromString("");
+                    return RuntimeValue.FromString(str.Length <= n ? str : str[..n]);
+                }
                 return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString() : "");
+
+            case "txt1":
+                // txt1(text) - get first word (before first space)
+                if (args.Length > 0)
+                {
+                    var str = args[0].AsString().TrimStart();
+                    var spaceIdx = str.IndexOf(' ');
+                    return RuntimeValue.FromString(spaceIdx >= 0 ? str[..spaceIdx] : str);
+                }
+                return RuntimeValue.FromString("");
+
+            case "txt2":
+                // txt2(text) - get rest after first word (after first space)
+                if (args.Length > 0)
+                {
+                    var str = args[0].AsString().TrimStart();
+                    var spaceIdx = str.IndexOf(' ');
+                    if (spaceIdx >= 0 && spaceIdx + 1 < str.Length)
+                        return RuntimeValue.FromString(str[(spaceIdx + 1)..].TrimStart());
+                }
+                return RuntimeValue.FromString("");
 
             case "num":
                 return RuntimeValue.FromInt(args.Length > 0 ? args[0].AsInt() : 0);
@@ -1464,14 +1613,29 @@ public sealed class BytecodeInterpreter
             case "matrand":
             case "rand":
             case "random":
+                // rand(min, max) returns random int in range, rand() returns random double 0-1
+                if (args.Length >= 2)
+                {
+                    var min = (int)args[0].AsInt();
+                    var max = (int)args[1].AsInt();
+                    if (min > max) (min, max) = (max, min); // Swap if reversed
+                    return RuntimeValue.FromInt(_random.Next(min, max + 1)); // +1 because Next is exclusive
+                }
+                if (args.Length == 1)
+                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt() + 1));
                 return RuntimeValue.FromDouble(_random.NextDouble());
 
             case "matrandint":
             case "randint":
                 if (args.Length >= 2)
-                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt(), (int)args[1].AsInt()));
+                {
+                    var min = (int)args[0].AsInt();
+                    var max = (int)args[1].AsInt();
+                    if (min > max) (min, max) = (max, min); // Swap if reversed
+                    return RuntimeValue.FromInt(_random.Next(min, max + 1)); // +1 because Next is exclusive
+                }
                 if (args.Length == 1)
-                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt()));
+                    return RuntimeValue.FromInt(_random.Next((int)args[0].AsInt() + 1));
                 return RuntimeValue.FromInt(_random.Next());
 
             case "matpi":
@@ -1549,10 +1713,135 @@ public sealed class BytecodeInterpreter
                 return RuntimeValue.FromInt(-1);
 
             case "txtreplace":
+            case "txttroca":
             case "replace":
                 if (args.Length >= 3)
                     return RuntimeValue.FromString(args[0].AsString().Replace(args[1].AsString(), args[2].AsString()));
                 return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtproc":
+                // txtproc(text, search) - returns position of search in text, or 0 if not found
+                // IntMUD returns 1-based position or 0 if not found
+                if (args.Length >= 2)
+                {
+                    var idx = args[0].AsString().IndexOf(args[1].AsString(), StringComparison.OrdinalIgnoreCase);
+                    return RuntimeValue.FromInt(idx >= 0 ? idx + 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtnulo":
+            case "txtnulo2":
+                // txtnulo(value) - returns "" if value is null/empty, otherwise the string value
+                if (args.Length > 0 && !args[0].IsNull)
+                {
+                    var str = args[0].AsString();
+                    return RuntimeValue.FromString(string.IsNullOrEmpty(str) ? "" : str);
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtremove":
+                // txtremove(text, chars) - removes all occurrences of chars from text
+                if (args.Length >= 2)
+                {
+                    var text = args[0].AsString();
+                    var charsToRemove = args[1].AsString();
+                    foreach (var c in charsToRemove)
+                    {
+                        text = text.Replace(c.ToString(), "");
+                    }
+                    return RuntimeValue.FromString(text);
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtmaimin":
+                // txtmaimin(text) - alternate caps: HeLlO wOrLd
+                if (args.Length > 0)
+                {
+                    var text = args[0].AsString();
+                    var result = new char[text.Length];
+                    bool upper = true;
+                    for (int i = 0; i < text.Length; i++)
+                    {
+                        if (char.IsLetter(text[i]))
+                        {
+                            result[i] = upper ? char.ToUpper(text[i]) : char.ToLower(text[i]);
+                            upper = !upper;
+                        }
+                        else
+                        {
+                            result[i] = text[i];
+                        }
+                    }
+                    return RuntimeValue.FromString(new string(result));
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtmaiini":
+                // txtmaiini(text) - capitalize first letter of each word
+                if (args.Length > 0)
+                {
+                    var text = args[0].AsString();
+                    if (string.IsNullOrEmpty(text)) return RuntimeValue.FromString("");
+                    var words = text.Split(' ');
+                    for (int i = 0; i < words.Length; i++)
+                    {
+                        if (words[i].Length > 0)
+                            words[i] = char.ToUpper(words[i][0]) + (words[i].Length > 1 ? words[i][1..].ToLower() : "");
+                    }
+                    return RuntimeValue.FromString(string.Join(" ", words));
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtconv":
+                // txtconv(text, from, to) - convert characters from one set to another
+                if (args.Length >= 3)
+                {
+                    var text = args[0].AsString();
+                    var fromChars = args[1].AsString();
+                    var toChars = args[2].AsString();
+                    var result = new char[text.Length];
+                    for (int i = 0; i < text.Length; i++)
+                    {
+                        var idx = fromChars.IndexOf(text[i]);
+                        result[i] = idx >= 0 && idx < toChars.Length ? toChars[idx] : text[i];
+                    }
+                    return RuntimeValue.FromString(new string(result));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txthex":
+                // txthex(number) - convert number to hexadecimal string
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(args[0].AsInt().ToString("X"));
+                return RuntimeValue.FromString("0");
+
+            case "txtdec":
+                // txtdec(hex_string) - convert hexadecimal string to number
+                if (args.Length > 0)
+                {
+                    var hex = args[0].AsString().TrimStart('0', 'x', 'X');
+                    if (int.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var num))
+                        return RuntimeValue.FromInt(num);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtcod":
+            case "txtchr":
+                // txtcod(char) or txtchr(code) - get ASCII code of char or char from code
+                if (args.Length > 0)
+                {
+                    if (args[0].Type == RuntimeValueType.String)
+                    {
+                        var s = args[0].AsString();
+                        return RuntimeValue.FromInt(s.Length > 0 ? (int)s[0] : 0);
+                    }
+                    else
+                    {
+                        var code = (int)args[0].AsInt();
+                        return RuntimeValue.FromString(code > 0 && code < 65536 ? ((char)code).ToString() : "");
+                    }
+                }
+                return RuntimeValue.Zero;
 
             case "txtstartswith":
             case "startswith":
@@ -1784,6 +2073,388 @@ public sealed class BytecodeInterpreter
                 }
                 return RuntimeValue.FromString("null");
 
+            case "criar":
+            case "create":
+            case "new":
+                // criar(className, args...) - create a new instance of a class
+                if (args.Length > 0)
+                {
+                    var classNameArg = args[0].AsString();
+                    var ctorArgs = args.Length > 1 ? args[1..] : Array.Empty<RuntimeValue>();
+                    return CreateObject(classNameArg, ctorArgs);
+                }
+                return RuntimeValue.Null;
+
+            case "apagar":
+            case "delete":
+                // apagar(object) - mark object for deletion (returns null)
+                // In IntMUD, this removes the object from the game world
+                return RuntimeValue.Null;
+
+            case "ref":
+                // ref(object) - returns reference to object, or null
+                return args.Length > 0 ? args[0] : RuntimeValue.Null;
+
+            // Additional text functions from original IntMUD
+            case "txtsublin":
+                // txtsublin(text, lineNum) - get specific line from text (1-based)
+                if (args.Length >= 2)
+                {
+                    var lines = args[0].AsString().Split('\n');
+                    var lineNum = (int)args[1].AsInt() - 1; // Convert to 0-based
+                    if (lineNum >= 0 && lineNum < lines.Length)
+                        return RuntimeValue.FromString(lines[lineNum].TrimEnd('\r'));
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtfim":
+                // txtfim(text, n) - get last n characters
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var n = (int)args[1].AsInt();
+                    if (n <= 0) return RuntimeValue.FromString("");
+                    if (n >= str.Length) return RuntimeValue.FromString(str);
+                    return RuntimeValue.FromString(str[^n..]);
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtcor":
+                // txtcor(text, color) - return text with color codes (pass-through for now)
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txte":
+                // txte(text, search) - check if text contains search (returns 1 or 0)
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(args[0].AsString().Contains(args[1].AsString(), StringComparison.OrdinalIgnoreCase) ? 1 : 0);
+                return RuntimeValue.Zero;
+
+            case "txts":
+                // txts(text, search) - search text, return position (1-based) or 0
+                if (args.Length >= 2)
+                {
+                    var idx = args[0].AsString().IndexOf(args[1].AsString(), StringComparison.OrdinalIgnoreCase);
+                    return RuntimeValue.FromInt(idx >= 0 ? idx + 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtrev":
+            case "txtreverso":
+                // txtrev(text) - reverse text
+                if (args.Length > 0)
+                {
+                    var chars = args[0].AsString().ToCharArray();
+                    Array.Reverse(chars);
+                    return RuntimeValue.FromString(new string(chars));
+                }
+                return RuntimeValue.FromString("");
+
+            case "txtcopiamai":
+                // txtcopiamai(text) - copy and uppercase
+                return RuntimeValue.FromString(args.Length > 0 ? args[0].AsString().ToUpperInvariant() : "");
+
+            case "txtrepete":
+                // txtrepete(text, n) - repeat text n times
+                if (args.Length >= 2)
+                {
+                    var str = args[0].AsString();
+                    var count = (int)args[1].AsInt();
+                    if (count <= 0) return RuntimeValue.FromString("");
+                    return RuntimeValue.FromString(string.Concat(Enumerable.Repeat(str, count)));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtnum":
+                // txtnum(number, width) - format number with leading zeros
+                if (args.Length >= 2)
+                {
+                    var num = args[0].AsInt();
+                    var width = (int)args[1].AsInt();
+                    return RuntimeValue.FromString(num.ToString().PadLeft(width, '0'));
+                }
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsInt().ToString()) : RuntimeValue.FromString("0");
+
+            case "txtprocmai":
+                // txtprocmai(text, search) - case-insensitive search, returns 1-based position
+                if (args.Length >= 2)
+                {
+                    var idx = args[0].AsString().IndexOf(args[1].AsString(), StringComparison.OrdinalIgnoreCase);
+                    return RuntimeValue.FromInt(idx >= 0 ? idx + 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtprocdif":
+                // txtprocdif(text, search) - case-sensitive search, returns 1-based position
+                if (args.Length >= 2)
+                {
+                    var idx = args[0].AsString().IndexOf(args[1].AsString(), StringComparison.Ordinal);
+                    return RuntimeValue.FromInt(idx >= 0 ? idx + 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtproclin":
+                // txtproclin(text, lineSearch) - search for line containing text
+                if (args.Length >= 2)
+                {
+                    var lines = args[0].AsString().Split('\n');
+                    var search = args[1].AsString();
+                    for (int i = 0; i < lines.Length; i++)
+                    {
+                        if (lines[i].Contains(search, StringComparison.OrdinalIgnoreCase))
+                            return RuntimeValue.FromInt(i + 1); // 1-based
+                    }
+                }
+                return RuntimeValue.Zero;
+
+            case "txttrocamai":
+                // txttrocamai(text, search, replace) - case-insensitive replace
+                if (args.Length >= 3)
+                    return RuntimeValue.FromString(args[0].AsString().Replace(args[1].AsString(), args[2].AsString(), StringComparison.OrdinalIgnoreCase));
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txttrocadif":
+                // txttrocadif(text, search, replace) - case-sensitive replace
+                if (args.Length >= 3)
+                    return RuntimeValue.FromString(args[0].AsString().Replace(args[1].AsString(), args[2].AsString(), StringComparison.Ordinal));
+                return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+            case "txtsepara":
+                // txtsepara(text, separator) - split text into array
+                if (args.Length >= 2)
+                {
+                    var parts = args[0].AsString().Split(args[1].AsString());
+                    var arr = RuntimeValue.CreateArray(parts.Length);
+                    for (int i = 0; i < parts.Length; i++)
+                        arr.SetIndex(i, RuntimeValue.FromString(parts[i]));
+                    return arr;
+                }
+                return RuntimeValue.CreateArray(0);
+
+            case "txtbit":
+                // txtbit(value, bit) - check if bit is set
+                if (args.Length >= 2)
+                {
+                    var val = args[0].AsInt();
+                    var bit = (int)args[1].AsInt();
+                    return RuntimeValue.FromInt((val & (1L << bit)) != 0 ? 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "txtbith":
+                // txtbith(value, bit) - set bit
+                if (args.Length >= 2)
+                {
+                    var val = args[0].AsInt();
+                    var bit = (int)args[1].AsInt();
+                    return RuntimeValue.FromInt(val | (1L << bit));
+                }
+                return args.Length > 0 ? RuntimeValue.FromInt(args[0].AsInt()) : RuntimeValue.Zero;
+
+            // Additional math functions from original IntMUD
+            case "intpos":
+                // intpos(text, search) - alias for txtproc
+                if (args.Length >= 2)
+                {
+                    var idx = args[0].AsString().IndexOf(args[1].AsString(), StringComparison.OrdinalIgnoreCase);
+                    return RuntimeValue.FromInt(idx >= 0 ? idx + 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "intsub":
+                // intsub(text, start, len) - substring and convert to int
+                if (args.Length >= 3)
+                {
+                    var str = args[0].AsString();
+                    var start = (int)args[1].AsInt();
+                    var len = (int)args[2].AsInt();
+                    if (start < 0) start = 0;
+                    if (start >= str.Length) return RuntimeValue.Zero;
+                    if (start + len > str.Length) len = str.Length - start;
+                    var sub = str.Substring(start, len);
+                    return RuntimeValue.FromInt(long.TryParse(sub, out var num) ? num : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "intsublin":
+                // intsublin(text, lineNum) - get line and convert to int
+                if (args.Length >= 2)
+                {
+                    var lines = args[0].AsString().Split('\n');
+                    var lineNum = (int)args[1].AsInt() - 1;
+                    if (lineNum >= 0 && lineNum < lines.Length)
+                    {
+                        var line = lines[lineNum].Trim();
+                        return RuntimeValue.FromInt(long.TryParse(line, out var num) ? num : 0);
+                    }
+                }
+                return RuntimeValue.Zero;
+
+            case "intchr":
+                // intchr(char) - get ASCII code of character
+                if (args.Length > 0)
+                {
+                    var str = args[0].AsString();
+                    return RuntimeValue.FromInt(str.Length > 0 ? (int)str[0] : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "inttotal":
+                // inttotal(array) - sum all elements in array
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Array)
+                {
+                    long total = 0;
+                    for (int i = 0; i < args[0].Length; i++)
+                        total += args[0].GetIndex(i).AsInt();
+                    return RuntimeValue.FromInt(total);
+                }
+                return RuntimeValue.Zero;
+
+            case "intbit":
+                // intbit(value, bit) - check if bit is set
+                if (args.Length >= 2)
+                {
+                    var val = args[0].AsInt();
+                    var bit = (int)args[1].AsInt();
+                    return RuntimeValue.FromInt((val & (1L << bit)) != 0 ? 1 : 0);
+                }
+                return RuntimeValue.Zero;
+
+            case "intbith":
+                // intbith(value, bit) - set bit
+                if (args.Length >= 2)
+                {
+                    var val = args[0].AsInt();
+                    var bit = (int)args[1].AsInt();
+                    return RuntimeValue.FromInt(val | (1L << bit));
+                }
+                return args.Length > 0 ? RuntimeValue.FromInt(args[0].AsInt()) : RuntimeValue.Zero;
+
+            case "matrad":
+                // matrad(degrees) - convert degrees to radians
+                return RuntimeValue.FromDouble(args.Length > 0 ? args[0].AsDouble() * Math.PI / 180.0 : 0.0);
+
+            case "matdeg":
+                // matdeg(radians) - convert radians to degrees
+                return RuntimeValue.FromDouble(args.Length > 0 ? args[0].AsDouble() * 180.0 / Math.PI : 0.0);
+
+            case "matraiz":
+                // matraiz(value) - square root (alias for sqrt)
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Sqrt(args[0].AsDouble()) : 0.0);
+
+            case "matcima":
+                // matcima(value) - ceiling (alias for ceil)
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Ceiling(args[0].AsDouble()) : 0.0);
+
+            case "matbaixo":
+                // matbaixo(value) - floor (alias for floor)
+                return RuntimeValue.FromDouble(args.Length > 0 ? Math.Floor(args[0].AsDouble()) : 0.0);
+
+            case "mathpow":
+                // mathpow(base, exp) - power (alias for pow)
+                return RuntimeValue.FromDouble(args.Length >= 2 ? Math.Pow(args[0].AsDouble(), args[1].AsDouble()) : 0.0);
+
+            // Object navigation functions
+            case "objantes":
+                // objantes(obj) - get previous object in list (stub - returns null)
+                return RuntimeValue.Null;
+
+            case "objdepois":
+                // objdepois(obj) - get next object in list (stub - returns null)
+                return RuntimeValue.Null;
+
+            // Variable exchange functions
+            case "vartroca":
+                // vartroca(var1, var2) - swap two variables (returns first value)
+                return args.Length > 0 ? args[0] : RuntimeValue.Null;
+
+            // Args function
+            case "args":
+                // args() - return array of all arguments
+                {
+                    if (_callStack.Count > 0)
+                    {
+                        var currentFrame = _callStack.Peek();
+                        if (currentFrame.Arguments != null)
+                        {
+                            var arr = RuntimeValue.CreateArray(currentFrame.Arguments.Length);
+                            for (int i = 0; i < currentFrame.Arguments.Length; i++)
+                                arr.SetIndex(i, currentFrame.Arguments[i]);
+                            return arr;
+                        }
+                    }
+                    return RuntimeValue.CreateArray(0);
+                }
+
+            // String formatting
+            case "formato":
+            case "format":
+                // formato(format, args...) - string formatting
+                if (args.Length > 0)
+                {
+                    var fmt = args[0].AsString();
+                    var fmtArgs = args.Skip(1).Select(a => (object)a.AsString()).ToArray();
+                    try
+                    {
+                        return RuntimeValue.FromString(string.Format(fmt, fmtArgs));
+                    }
+                    catch
+                    {
+                        return RuntimeValue.FromString(fmt);
+                    }
+                }
+                return RuntimeValue.FromString("");
+
+            // Time functions
+            case "tempo":
+            case "time":
+                // tempo() - current timestamp in seconds
+                return RuntimeValue.FromInt(DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+            case "tempoms":
+            case "timems":
+                // tempoms() - current timestamp in milliseconds
+                return RuntimeValue.FromInt(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+
+            case "data":
+            case "date":
+                // data() - current date as string
+                return RuntimeValue.FromString(DateTime.Now.ToString("yyyy-MM-dd"));
+
+            case "hora":
+            case "hour":
+                // hora() - current hour (0-23)
+                return RuntimeValue.FromInt(DateTime.Now.Hour);
+
+            case "minuto":
+            case "minute":
+                // minuto() - current minute (0-59)
+                return RuntimeValue.FromInt(DateTime.Now.Minute);
+
+            case "segundo":
+            case "second":
+                // segundo() - current second (0-59)
+                return RuntimeValue.FromInt(DateTime.Now.Second);
+
+            case "dia":
+            case "day":
+                // dia() - current day of month (1-31)
+                return RuntimeValue.FromInt(DateTime.Now.Day);
+
+            case "mes":
+            case "month":
+                // mes() - current month (1-12)
+                return RuntimeValue.FromInt(DateTime.Now.Month);
+
+            case "ano":
+            case "year":
+                // ano() - current year
+                return RuntimeValue.FromInt(DateTime.Now.Year);
+
+            case "diasemana":
+            case "weekday":
+                // diasemana() - day of week (0=Sunday, 6=Saturday)
+                return RuntimeValue.FromInt((int)DateTime.Now.DayOfWeek);
+
             default:
                 // Unknown function - return null
                 return RuntimeValue.Null;
@@ -1901,17 +2572,307 @@ public sealed class BytecodeInterpreter
         {
             if (_unit.Constants.TryGetValue(memberName, out var constant))
             {
-                return constant.Type switch
-                {
-                    ConstantType.Int => RuntimeValue.FromInt(constant.IntValue),
-                    ConstantType.Double => RuntimeValue.FromDouble(constant.DoubleValue),
-                    ConstantType.String => RuntimeValue.FromString(constant.StringValue),
-                    _ => RuntimeValue.Null
-                };
+                return EvaluateConstant(constant);
             }
         }
 
         return RuntimeValue.Null;
+    }
+
+    private void StoreClassMember(string className, string memberName, RuntimeValue value)
+    {
+        // Store a value to a class member (static variable)
+        // For now, we store in globals with a qualified name
+        var qualifiedName = $"{className}:{memberName}";
+        _globals[qualifiedName] = value;
+    }
+
+    /// <summary>
+    /// Evaluate a constant value, handling expression constants that need runtime evaluation.
+    /// </summary>
+    private RuntimeValue EvaluateConstant(IntMud.Compiler.Bytecode.CompiledConstant constant)
+    {
+        return constant.Type switch
+        {
+            ConstantType.Int => RuntimeValue.FromInt(constant.IntValue),
+            ConstantType.Double => RuntimeValue.FromDouble(constant.DoubleValue),
+            ConstantType.String => RuntimeValue.FromString(constant.StringValue),
+            ConstantType.Expression => EvaluateExpressionBytecode(constant.ExpressionBytecode!),
+            _ => RuntimeValue.Null
+        };
+    }
+
+    /// <summary>
+    /// Execute expression bytecode in the current context and return the result.
+    /// Used for evaluating constant expressions at runtime.
+    /// </summary>
+    private RuntimeValue EvaluateExpressionBytecode(byte[] bytecode)
+    {
+        // Get current frame for context (args, this, etc.)
+        var frame = _callStack.Count > 0 ? _callStack.Peek() : default;
+        var stringPool = _unit.StringPool;
+        var savedIp = _ip;
+        var savedSp = _sp;
+
+        try
+        {
+            _ip = 0;
+            while (_ip < bytecode.Length)
+            {
+                var op = (BytecodeOp)bytecode[_ip++];
+
+                switch (op)
+                {
+                    case BytecodeOp.Nop:
+                        break;
+
+                    case BytecodeOp.Pop:
+                        if (_sp > savedSp)
+                            _sp--;
+                        break;
+
+                    case BytecodeOp.Dup:
+                        if (_sp <= savedSp)
+                            throw new RuntimeException("Stack underflow in expression");
+                        Push(_valueStack[_sp - 1]);
+                        break;
+
+                    case BytecodeOp.PushNull:
+                        Push(RuntimeValue.Null);
+                        break;
+
+                    case BytecodeOp.PushInt:
+                        Push(RuntimeValue.FromInt(ReadInt32Expr(bytecode)));
+                        break;
+
+                    case BytecodeOp.PushDouble:
+                        Push(RuntimeValue.FromDouble(ReadDoubleExpr(bytecode)));
+                        break;
+
+                    case BytecodeOp.PushString:
+                        var strIdx = ReadUInt16Expr(bytecode);
+                        Push(RuntimeValue.FromString(stringPool[strIdx]));
+                        break;
+
+                    case BytecodeOp.PushTrue:
+                        Push(RuntimeValue.True);
+                        break;
+
+                    case BytecodeOp.PushFalse:
+                        Push(RuntimeValue.False);
+                        break;
+
+                    case BytecodeOp.LoadArg:
+                        var argIdx = ReadUInt16Expr(bytecode);
+                        if (frame.Arguments != null && argIdx < frame.Arguments.Length)
+                            Push(frame.Arguments[argIdx]);
+                        else
+                            Push(RuntimeValue.Null);
+                        break;
+
+                    case BytecodeOp.StoreArg:
+                        var storeArgIdxExpr = ReadUInt16Expr(bytecode);
+                        if (frame.Arguments != null && storeArgIdxExpr < frame.Arguments.Length)
+                            frame.Arguments[storeArgIdxExpr] = Pop();
+                        else
+                            Pop(); // Discard value if arg doesn't exist
+                        break;
+
+                    case BytecodeOp.LoadThis:
+                        if (frame.ThisObject != null)
+                            Push(RuntimeValue.FromObject(frame.ThisObject));
+                        else
+                            Push(RuntimeValue.Null);
+                        break;
+
+                    case BytecodeOp.LoadField:
+                        var fieldName = stringPool[ReadUInt16Expr(bytecode)];
+                        if (frame.ThisObject != null)
+                            Push(frame.ThisObject.GetField(fieldName));
+                        else
+                            Push(RuntimeValue.Null);
+                        break;
+
+                    case BytecodeOp.LoadFieldDynamic:
+                        var dynFieldName = Pop().AsString();
+                        if (frame.ThisObject != null)
+                            Push(frame.ThisObject.GetField(dynFieldName));
+                        else
+                            Push(RuntimeValue.Null);
+                        break;
+
+                    // Arithmetic (using operator overloads)
+                    case BytecodeOp.Add:
+                        var b = Pop();
+                        var a = Pop();
+                        Push(a + b);
+                        break;
+
+                    case BytecodeOp.Sub:
+                        b = Pop();
+                        a = Pop();
+                        Push(a - b);
+                        break;
+
+                    case BytecodeOp.Mul:
+                        b = Pop();
+                        a = Pop();
+                        Push(a * b);
+                        break;
+
+                    case BytecodeOp.Div:
+                        b = Pop();
+                        a = Pop();
+                        Push(a / b);
+                        break;
+
+                    case BytecodeOp.Mod:
+                        b = Pop();
+                        a = Pop();
+                        Push(a % b);
+                        break;
+
+                    // Bitwise (using operator overloads)
+                    case BytecodeOp.BitAnd:
+                        b = Pop();
+                        a = Pop();
+                        Push(a & b);
+                        break;
+
+                    case BytecodeOp.BitOr:
+                        b = Pop();
+                        a = Pop();
+                        Push(a | b);
+                        break;
+
+                    case BytecodeOp.BitXor:
+                        b = Pop();
+                        a = Pop();
+                        Push(a ^ b);
+                        break;
+
+                    case BytecodeOp.BitNot:
+                        Push(~Pop());
+                        break;
+
+                    case BytecodeOp.Shl:
+                        b = Pop();
+                        a = Pop();
+                        Push(RuntimeValue.FromInt(a.AsInt() << (int)b.AsInt()));
+                        break;
+
+                    case BytecodeOp.Shr:
+                        b = Pop();
+                        a = Pop();
+                        Push(RuntimeValue.FromInt(a.AsInt() >> (int)b.AsInt()));
+                        break;
+
+                    // Comparison (using operator overloads)
+                    case BytecodeOp.Eq:
+                        b = Pop();
+                        a = Pop();
+                        Push(a == b);
+                        break;
+
+                    case BytecodeOp.Ne:
+                        b = Pop();
+                        a = Pop();
+                        Push(a != b);
+                        break;
+
+                    case BytecodeOp.Lt:
+                        b = Pop();
+                        a = Pop();
+                        Push(a < b);
+                        break;
+
+                    case BytecodeOp.Le:
+                        b = Pop();
+                        a = Pop();
+                        Push(a <= b);
+                        break;
+
+                    case BytecodeOp.Gt:
+                        b = Pop();
+                        a = Pop();
+                        Push(a > b);
+                        break;
+
+                    case BytecodeOp.Ge:
+                        b = Pop();
+                        a = Pop();
+                        Push(a >= b);
+                        break;
+
+                    // Logical
+                    case BytecodeOp.Not:
+                        Push(RuntimeValue.FromBool(!Pop().IsTruthy));
+                        break;
+
+                    case BytecodeOp.Neg:
+                        Push(-Pop());
+                        break;
+
+                    // Jumps for conditional expressions
+                    case BytecodeOp.Jump:
+                        _ip = ReadUInt16Expr(bytecode);
+                        break;
+
+                    case BytecodeOp.JumpIfFalse:
+                        var jumpAddr = ReadUInt16Expr(bytecode);
+                        if (!Pop().IsTruthy)
+                            _ip = jumpAddr;
+                        break;
+
+                    case BytecodeOp.JumpIfTrue:
+                        jumpAddr = ReadUInt16Expr(bytecode);
+                        if (Pop().IsTruthy)
+                            _ip = jumpAddr;
+                        break;
+
+                    case BytecodeOp.ReturnValue:
+                        // Return the top of the stack
+                        return _sp > savedSp ? Pop() : RuntimeValue.Null;
+
+                    case BytecodeOp.Return:
+                        return RuntimeValue.Null;
+
+                    default:
+                        throw new RuntimeException($"Unsupported opcode in constant expression: {op}");
+                }
+            }
+
+            // If we reach here, return top of stack or null
+            return _sp > savedSp ? Pop() : RuntimeValue.Null;
+        }
+        finally
+        {
+            _ip = savedIp;
+            // Restore stack pointer if needed
+            if (_sp > savedSp)
+                _sp = savedSp;
+        }
+    }
+
+    private int ReadInt32Expr(byte[] bytecode)
+    {
+        var value = BitConverter.ToInt32(bytecode, _ip);
+        _ip += 4;
+        return value;
+    }
+
+    private double ReadDoubleExpr(byte[] bytecode)
+    {
+        var value = BitConverter.ToDouble(bytecode, _ip);
+        _ip += 8;
+        return value;
+    }
+
+    private ushort ReadUInt16Expr(byte[] bytecode)
+    {
+        var value = (ushort)(bytecode[_ip] | (bytecode[_ip + 1] << 8));
+        _ip += 2;
+        return value;
     }
 }
 
