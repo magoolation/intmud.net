@@ -59,11 +59,16 @@ public sealed class IntMudRuntime : IDisposable
     }
 
     /// <summary>
-    /// Initialize the runtime by scanning classes and instantiating those with special types.
+    /// Initialize the runtime by calling iniclasse on ALL classes (matching original IntMUD behavior).
+    /// This is the first phase of initialization - iniclasse is called before creating instances.
     /// </summary>
     public void Initialize()
     {
-        // Scan all classes for special type variables
+        // Phase 1: Call iniclasse on ALL classes (like original IntMUD)
+        // This is called before creating instances, to allow classes to register themselves
+        CallIniclasseOnAllClasses();
+
+        // Phase 2: Scan all classes for special type variables and create instances
         foreach (var (className, unit) in _compiledUnits)
         {
             var hasSpecialTypes = false;
@@ -86,6 +91,46 @@ public sealed class IntMudRuntime : IDisposable
                     _instances[className] = instance;
                     RegisterSpecialTypes(instance, unit);
                 }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Call iniclasse function on all classes (matching original IntMUD C++ behavior).
+    /// In original IntMUD, iniclasse is called for EVERY class at startup with the class name as argument.
+    /// </summary>
+    private void CallIniclasseOnAllClasses()
+    {
+        foreach (var (className, unit) in _compiledUnits)
+        {
+            // Check if the class has an 'iniclasse' function
+            if (!unit.Functions.TryGetValue("iniclasse", out var iniclasseFunc))
+                continue;
+
+            try
+            {
+                // Create a temporary interpreter for this call
+                var interpreter = new BytecodeInterpreter(unit, _compiledUnits);
+                interpreter.WriteOutput = text => OnOutput?.Invoke(text);
+
+                // Create a temporary object for 'this' context (even though iniclasse is typically static-like)
+                var tempInstance = new BytecodeRuntimeObject(unit);
+
+                // Call iniclasse with the class name as argument (like original IntMUD)
+                interpreter.ExecuteFunctionWithThis(
+                    iniclasseFunc,
+                    tempInstance,
+                    unit,
+                    new[] { RuntimeValue.FromString(className) });
+            }
+            catch (TerminateException)
+            {
+                OnTerminate?.Invoke();
+                return;
+            }
+            catch (Exception ex)
+            {
+                OnOutput?.Invoke($"Error in {className}.iniclasse: {ex.Message}\n");
             }
         }
     }
