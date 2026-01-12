@@ -6,8 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
-    <RootNamespace>IntMud.Console</RootNamespace>
-    <Description>Console application for IntMUD interpreter</Description>
+    <RootNamespace>IntMud.Server</RootNamespace>
+    <Description>IntMUD Server - Telnet hosting with dynamic port management</Description>
   </PropertyGroup>
 
   <ItemGroup>

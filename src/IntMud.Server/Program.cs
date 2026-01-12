@@ -28,9 +28,9 @@ for (int i = 0; i < args.Length; i++)
             break;
         case "-h":
         case "--help":
-            Console.WriteLine("IntMUD - .NET Runtime");
+            Console.WriteLine("IntMUD Server - .NET Runtime");
             Console.WriteLine();
-            Console.WriteLine("Usage: IntMud.Console [options]");
+            Console.WriteLine("Usage: IntMud.Server [options]");
             Console.WriteLine();
             Console.WriteLine("Options:");
             Console.WriteLine("  -p, --port <port>      Enable server on specified port");

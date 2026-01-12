@@ -19,7 +19,7 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IntMud.Networking", "src\In
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IntMud.Hosting", "src\IntMud.Hosting\IntMud.Hosting.csproj", "{0BFCDA0B-F0EA-46DC-AD57-E718227D31EC}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IntMud.Console", "src\IntMud.Console\IntMud.Console.csproj", "{C170391E-B49D-413D-AE66-6A5642E00D8E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IntMud.Server", "src\IntMud.Server\IntMud.Server.csproj", "{C170391E-B49D-413D-AE66-6A5642E00D8E}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
 EndProject
