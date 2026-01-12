@@ -465,9 +465,18 @@ public sealed class IntMudEngine : IDisposable
             return;
         }
 
-        // Determine the main config file name (same as directory name + .int)
-        var dirName = Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        var mainConfigFile = Path.Combine(sourcePath, $"{dirName}.int");
+        // Determine the main config file name
+        // If MainFile is specified in options, use it; otherwise use directory name + .int
+        string mainConfigFile;
+        if (!string.IsNullOrEmpty(_options.MainFile))
+        {
+            mainConfigFile = Path.Combine(sourcePath, _options.MainFile);
+        }
+        else
+        {
+            var dirName = Path.GetFileName(sourcePath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            mainConfigFile = Path.Combine(sourcePath, $"{dirName}.int");
+        }
 
         // Try to load the config file
         var configParser = new IntMudConfigParser();
