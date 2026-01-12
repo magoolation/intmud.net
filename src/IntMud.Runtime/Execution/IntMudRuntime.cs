@@ -61,39 +61,25 @@ public sealed class IntMudRuntime : IDisposable
 
     /// <summary>
     /// Initialize the runtime by calling iniclasse on ALL classes (matching original IntMUD behavior).
-    /// This is the first phase of initialization - iniclasse is called before creating instances.
+    /// In original IntMUD:
+    /// 1. All classes are loaded
+    /// 2. iniclasse is called on ALL classes with the class name as argument
+    /// 3. iniclasse creates objects via criar() if needed
+    /// 4. Objects created via criar() automatically have their "ini" function called
     /// </summary>
     public void Initialize()
     {
-        // Phase 1: Call iniclasse on ALL classes (like original IntMUD)
-        // This is called before creating instances, to allow classes to register themselves
+        // Clear registry before starting
+        GlobalObjectRegistry.Clear();
+
+        // Call iniclasse on ALL classes (like original IntMUD)
+        // iniclasse is responsible for creating objects via criar()
+        // The pattern is: const iniclasse = !$[arg0] && criar(arg0)
+        // This means: if no object of class arg0 exists, create one
         CallIniclasseOnAllClasses();
 
-        // Phase 2: Scan all classes for special type variables and create instances
-        foreach (var (className, unit) in _compiledUnits)
-        {
-            var hasSpecialTypes = false;
-
-            foreach (var variable in unit.Variables)
-            {
-                if (SpecialTypeRegistry.IsSpecialType(variable.TypeName))
-                {
-                    hasSpecialTypes = true;
-                    break;
-                }
-            }
-
-            if (hasSpecialTypes)
-            {
-                // Create an instance of this class
-                var instance = CreateInstance(className);
-                if (instance != null)
-                {
-                    _instances[className] = instance;
-                    RegisterSpecialTypes(instance, unit);
-                }
-            }
-        }
+        // Now synchronize: get all objects created by iniclasse and add to runtime
+        SyncObjectsFromRegistry();
     }
 
     /// <summary>
@@ -225,6 +211,42 @@ public sealed class IntMudRuntime : IDisposable
     }
 
     /// <summary>
+    /// Synchronize objects from GlobalObjectRegistry into the runtime's instance tracking.
+    /// This is called after iniclasse creates objects via criar().
+    /// </summary>
+    private void SyncObjectsFromRegistry()
+    {
+        var allObjects = GlobalObjectRegistry.GetAllObjects();
+
+        foreach (var obj in allObjects)
+        {
+            // Skip if already tracked
+            if (_instances.ContainsKey(obj.ClassName) && _instances[obj.ClassName] == obj)
+                continue;
+
+            // Add to instances (use class name as key for first object)
+            if (!_instances.ContainsKey(obj.ClassName))
+            {
+                _instances[obj.ClassName] = obj;
+            }
+
+            // Create interpreter if needed
+            if (!_interpreters.ContainsKey(obj))
+            {
+                if (_compiledUnits.TryGetValue(obj.ClassName, out var unit))
+                {
+                    var interpreter = new BytecodeInterpreter(unit, _compiledUnits);
+                    interpreter.WriteOutput = text => OnOutput?.Invoke(text);
+                    _interpreters[obj] = interpreter;
+
+                    // Register special types for this object
+                    RegisterSpecialTypes(obj, unit);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// Start the runtime event loop.
     /// </summary>
     public void Start()
@@ -235,8 +257,8 @@ public sealed class IntMudRuntime : IDisposable
         _running = true;
         _cancellationSource = new CancellationTokenSource();
 
-        // Call initialization functions
-        CallInitializationFunctions();
+        // Note: ini() is already called by CreateObject when objects are created via criar()
+        // during iniclasse phase. No need to call CallInitializationFunctions() again.
 
         // Start the event loop in a separate thread
         _eventLoopThread = new Thread(EventLoop)

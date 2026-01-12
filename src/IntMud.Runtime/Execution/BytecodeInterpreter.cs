@@ -81,6 +81,22 @@ public static class GlobalObjectRegistry
     }
 
     /// <summary>
+    /// Get all registered objects across all classes.
+    /// </summary>
+    public static IReadOnlyList<BytecodeRuntimeObject> GetAllObjects()
+    {
+        lock (_lock)
+        {
+            var result = new List<BytecodeRuntimeObject>();
+            foreach (var list in _objectsByClass.Values)
+            {
+                result.AddRange(list);
+            }
+            return result;
+        }
+    }
+
+    /// <summary>
     /// Clear all registered objects (for testing).
     /// </summary>
     public static void Clear()
