@@ -2727,18 +2727,19 @@ public sealed class BytecodeInterpreter
     public RuntimeValue ExecuteExpressionConstant(
         IntMud.Compiler.Bytecode.CompiledConstant constant,
         BytecodeRuntimeObject thisObject,
-        BytecodeCompiledUnit unit)
+        BytecodeCompiledUnit unit,
+        RuntimeValue[]? arguments = null)
     {
         if (constant.Type != ConstantType.Expression || constant.ExpressionBytecode == null)
         {
             return EvaluateConstant(constant);
         }
 
-        // Push a call frame with the 'this' object to establish context
+        // Push a call frame with the 'this' object and arguments to establish context
         _callStack.Push(new CallFrame
         {
             ThisObject = thisObject,
-            Arguments = Array.Empty<RuntimeValue>()
+            Arguments = arguments ?? Array.Empty<RuntimeValue>()
         });
 
         try
@@ -2787,6 +2788,12 @@ public sealed class BytecodeInterpreter
                         Push(_valueStack[_sp - 1]);
                         break;
 
+                    case BytecodeOp.Swap:
+                        if (_sp - savedSp < 2)
+                            throw new RuntimeException("Stack underflow in expression");
+                        (_valueStack[_sp - 1], _valueStack[_sp - 2]) = (_valueStack[_sp - 2], _valueStack[_sp - 1]);
+                        break;
+
                     case BytecodeOp.PushNull:
                         Push(RuntimeValue.Null);
                         break;
@@ -2813,7 +2820,8 @@ public sealed class BytecodeInterpreter
                         break;
 
                     case BytecodeOp.LoadArg:
-                        var argIdx = ReadUInt16Expr(bytecode);
+                        // LoadArg uses 1 byte for the argument index (matching emitter)
+                        var argIdx = bytecode[_ip++];
                         if (frame.Arguments != null && argIdx < frame.Arguments.Length)
                             Push(frame.Arguments[argIdx]);
                         else
@@ -2821,7 +2829,8 @@ public sealed class BytecodeInterpreter
                         break;
 
                     case BytecodeOp.StoreArg:
-                        var storeArgIdxExpr = ReadUInt16Expr(bytecode);
+                        // StoreArg uses 1 byte for the argument index (matching emitter)
+                        var storeArgIdxExpr = bytecode[_ip++];
                         if (frame.Arguments != null && storeArgIdxExpr < frame.Arguments.Length)
                             frame.Arguments[storeArgIdxExpr] = Pop();
                         else
@@ -2849,6 +2858,45 @@ public sealed class BytecodeInterpreter
                             Push(frame.ThisObject.GetField(dynFieldName));
                         else
                             Push(RuntimeValue.Null);
+                        break;
+
+                    case BytecodeOp.StoreField:
+                        fieldName = stringPool[ReadUInt16Expr(bytecode)];
+                        var storeValue = Pop();
+                        if (frame.ThisObject != null)
+                            frame.ThisObject.SetField(fieldName, storeValue);
+                        break;
+
+                    case BytecodeOp.StoreFieldDynamic:
+                        dynFieldName = Pop().AsString();
+                        storeValue = Pop();
+                        if (frame.ThisObject != null)
+                            frame.ThisObject.SetField(dynFieldName, storeValue);
+                        break;
+
+                    case BytecodeOp.LoadClass:
+                        var classIdx = ReadUInt16Expr(bytecode);
+                        var className = stringPool[classIdx];
+                        Push(LoadClass(className));
+                        break;
+
+                    case BytecodeOp.LoadClassDynamic:
+                        className = Pop().AsString();
+                        Push(LoadClass(className));
+                        break;
+
+                    case BytecodeOp.LoadClassMember:
+                        classIdx = ReadUInt16Expr(bytecode);
+                        var memberIdx = ReadUInt16Expr(bytecode);
+                        className = stringPool[classIdx];
+                        var memberName = stringPool[memberIdx];
+                        Push(LoadClassMember(className, memberName));
+                        break;
+
+                    case BytecodeOp.LoadClassMemberDynamic:
+                        memberName = Pop().AsString();
+                        className = Pop().AsString();
+                        Push(LoadClassMember(className, memberName));
                         break;
 
                     // Arithmetic (using operator overloads)
@@ -2963,21 +3011,74 @@ public sealed class BytecodeInterpreter
                         Push(-Pop());
                         break;
 
-                    // Jumps for conditional expressions
+                    // Jumps for conditional expressions (using relative offsets like main interpreter)
                     case BytecodeOp.Jump:
-                        _ip = ReadUInt16Expr(bytecode);
+                        var jumpOffset = ReadInt16Expr(bytecode);
+                        _ip += jumpOffset;
                         break;
 
                     case BytecodeOp.JumpIfFalse:
-                        var jumpAddr = ReadUInt16Expr(bytecode);
+                        jumpOffset = ReadInt16Expr(bytecode);
                         if (!Pop().IsTruthy)
-                            _ip = jumpAddr;
+                            _ip += jumpOffset;
                         break;
 
                     case BytecodeOp.JumpIfTrue:
-                        jumpAddr = ReadUInt16Expr(bytecode);
+                        jumpOffset = ReadInt16Expr(bytecode);
                         if (Pop().IsTruthy)
-                            _ip = jumpAddr;
+                            _ip += jumpOffset;
+                        break;
+
+                    // Function calls - needed for expressions like criar(arg0)
+                    // Note: We must save/restore _ip around calls because ExecuteFunction modifies _ip
+                    case BytecodeOp.Call:
+                        var funcName = stringPool[ReadUInt16Expr(bytecode)];
+                        var argCount = bytecode[_ip++];
+                        {
+                            var savedExprIp = _ip;
+                            ExecuteCall(funcName, argCount);
+                            _ip = savedExprIp;
+                        }
+                        break;
+
+                    case BytecodeOp.CallMethod:
+                        var methodName = stringPool[ReadUInt16Expr(bytecode)];
+                        argCount = bytecode[_ip++];
+                        {
+                            var savedExprIp = _ip;
+                            ExecuteMethodCall(methodName, argCount);
+                            _ip = savedExprIp;
+                        }
+                        break;
+
+                    case BytecodeOp.CallMethodDynamic:
+                        var dynamicMethodName = Pop().AsString();
+                        argCount = bytecode[_ip++];
+                        {
+                            var savedExprIp = _ip;
+                            ExecuteMethodCall(dynamicMethodName, argCount);
+                            _ip = savedExprIp;
+                        }
+                        break;
+
+                    case BytecodeOp.CallDynamic:
+                        var dynamicFuncName = Pop().AsString();
+                        argCount = bytecode[_ip++];
+                        {
+                            var savedExprIp = _ip;
+                            ExecuteCall(dynamicFuncName, argCount);
+                            _ip = savedExprIp;
+                        }
+                        break;
+
+                    case BytecodeOp.CallBuiltin:
+                        var builtinId = ReadUInt16Expr(bytecode);
+                        argCount = bytecode[_ip++];
+                        {
+                            var savedExprIp = _ip;
+                            ExecuteBuiltinCall(builtinId, argCount);
+                            _ip = savedExprIp;
+                        }
                         break;
 
                     case BytecodeOp.ReturnValue:
@@ -3021,6 +3122,13 @@ public sealed class BytecodeInterpreter
     private ushort ReadUInt16Expr(byte[] bytecode)
     {
         var value = (ushort)(bytecode[_ip] | (bytecode[_ip + 1] << 8));
+        _ip += 2;
+        return value;
+    }
+
+    private short ReadInt16Expr(byte[] bytecode)
+    {
+        var value = BitConverter.ToInt16(bytecode, _ip);
         _ip += 2;
         return value;
     }

@@ -260,43 +260,61 @@ class MudInterpreter
         }
 
         Console.WriteLine($"Found {allFiles.Count} source files.");
-        Console.WriteLine();
+        Console.Out.Flush();
 
         // Compile all files
         var parser = new IntMudSourceParser();
         var errorCount = 0;
         var classCount = 0;
+        var fileNum = 0;
 
         foreach (var file in allFiles)
         {
+            fileNum++;
+            var relativePath = GetRelativePath(file);
+            Console.Write($"  [{fileNum}/{allFiles.Count}] {relativePath}...");
+            Console.Out.Flush();
             try
             {
-                var source = await File.ReadAllTextAsync(file, Encoding.Latin1);
+                var source = File.ReadAllText(file, Encoding.Latin1);
+                Console.Write(" parsing...");
+                Console.Out.Flush();
                 var ast = parser.Parse(source, file);
 
                 if (ast.Classes.Count > 0)
                 {
                     try
                     {
-                        var unit = BytecodeCompiler.Compile(ast);
-                        _compiledUnits[unit.ClassName] = unit;
-                        classCount++;
+                        Console.Write(" compiling...");
+                        Console.Out.Flush();
+                        // Compile ALL classes in the file (each class gets its own unit)
+                        var units = BytecodeCompiler.CompileAll(ast);
+                        foreach (var unit in units)
+                        {
+                            _compiledUnits[unit.ClassName] = unit;
+                            classCount++;
+                        }
+                        Console.WriteLine(" OK");
                     }
                     catch (Exception ex)
                     {
                         errorCount++;
-                        var relativePath = GetRelativePath(file);
-                        Console.WriteLine($"Error compiling {relativePath}: {ex.Message}");
+                        Console.WriteLine($" ERROR: {ex.Message}");
                     }
+                }
+                else
+                {
+                    Console.WriteLine(" (no classes)");
                 }
             }
             catch (Exception ex)
             {
                 errorCount++;
-                var relativePath = GetRelativePath(file);
-                Console.WriteLine($"Error parsing {relativePath}: {ex.Message}");
+                Console.WriteLine($" PARSE ERROR: {ex.Message}");
             }
         }
+
+        Console.WriteLine($"Compiled {classCount} classes.");
 
         if (errorCount > 0)
         {
@@ -316,11 +334,12 @@ class MudInterpreter
 
     private string? ReadKey()
     {
-        if (!Console.KeyAvailable)
-            return null;
-
         try
         {
+            // Console.KeyAvailable throws in non-interactive terminals
+            if (!Console.KeyAvailable)
+                return null;
+
             var key = Console.ReadKey(intercept: true);
 
             // Handle special keys (matching original IntMUD key names)

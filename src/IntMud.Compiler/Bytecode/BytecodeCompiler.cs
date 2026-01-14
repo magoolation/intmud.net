@@ -26,26 +26,36 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     /// </summary>
     public static CompiledUnit Compile(CompilationUnitNode ast)
     {
+        // For backward compatibility, return the first class
+        var units = CompileAll(ast);
+        if (units.Count == 0)
+            throw new CompilerException("No class definition found");
+        return units[0];
+    }
+
+    /// <summary>
+    /// Compile all classes in the AST to separate CompiledUnits.
+    /// Each class gets its own unit with its own constants, functions, and variables.
+    /// </summary>
+    public static List<CompiledUnit> CompileAll(CompilationUnitNode ast)
+    {
         if (ast.Classes.Count == 0)
             throw new CompilerException("No class definition found");
 
-        var classNode = ast.Classes[0];
-        var compiler = new BytecodeCompiler(classNode.Name);
-        compiler._unit.SourceFile = ast.SourceFile;
+        var results = new List<CompiledUnit>();
 
-        // Process file options
-        foreach (var option in ast.Options)
+        foreach (var classNode in ast.Classes)
         {
-            option.Accept(compiler);
+            var compiler = new BytecodeCompiler(classNode.Name);
+            compiler._unit.SourceFile = ast.SourceFile;
+
+            // Compile this single class
+            classNode.Accept(compiler);
+
+            results.Add(compiler._unit);
         }
 
-        // Compile all classes (usually just one per file)
-        foreach (var cls in ast.Classes)
-        {
-            cls.Accept(compiler);
-        }
-
-        return compiler._unit;
+        return results;
     }
 
     public object? VisitCompilationUnit(CompilationUnitNode node)

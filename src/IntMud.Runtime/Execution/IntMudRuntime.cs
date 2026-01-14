@@ -124,16 +124,13 @@ public sealed class IntMudRuntime : IDisposable
                 }
                 else if (hasIniclasseConst)
                 {
-                    // For const iniclasse, we need to set arg0 and evaluate the constant
-                    // The constant expression will use arg0 to get the class name
-                    // We simulate this by storing arg0 in globals before evaluation
-                    interpreter.Globals["arg0"] = RuntimeValue.FromString(className);
-
                     // Evaluate the iniclasse constant (this may call criar() to create objects)
+                    // Pass the class name as arg0 for the expression
                     if (unit.Constants.TryGetValue("iniclasse", out var constant))
                     {
-                        // Evaluate the constant expression in context
-                        interpreter.ExecuteExpressionConstant(constant, tempInstance, unit);
+                        // Evaluate the constant expression in context with className as arg0
+                        var args = new[] { RuntimeValue.FromString(className) };
+                        interpreter.ExecuteExpressionConstant(constant, tempInstance, unit, args);
                     }
                 }
             }
