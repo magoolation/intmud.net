@@ -235,25 +235,9 @@ class MudInterpreter
             }
         }
 
-        // Also add .int files from the base directory (excluding the main config file)
-        try
-        {
-            var rootFiles = Directory.GetFiles(_baseDir, "*.int", SearchOption.TopDirectoryOnly);
-            foreach (var file in rootFiles)
-            {
-                if (!string.Equals(file, _mainFile, StringComparison.OrdinalIgnoreCase) &&
-                    !allFiles.Contains(file, StringComparer.OrdinalIgnoreCase))
-                {
-                    allFiles.Add(file);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  Warning: Error scanning base directory: {ex.Message}");
-        }
-
-        // Add the main file itself (it may contain class definitions after config)
+        // Only add the main file itself (it contains class definitions after config)
+        // Note: We do NOT automatically add other .int files from the base directory
+        // They must be explicitly included via 'incluir = path/' directives
         if (!allFiles.Contains(_mainFile, StringComparer.OrdinalIgnoreCase))
         {
             allFiles.Insert(0, _mainFile);
