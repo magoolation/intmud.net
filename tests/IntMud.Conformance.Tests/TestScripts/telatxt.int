@@ -1,0 +1,43 @@
+telatxt = 1
+err = 1
+
+classe teste
+telatxt tela
+func iniclasse
+  criar(arg0)
+func ini
+  tela.total = 20
+  se tela.proto == 0
+    terminar
+  fimse
+func tela_tecla
+  se arg0 == "F1"
+    tela.bipe
+  senao arg0 == "F2"
+    tela.limpa
+  senao arg0 == "F3"
+    tela.msg("Linha " + tela.texto + " Máximo " + tela.total + "\n")
+  senao arg0 == "F4"
+    tela.texto = "Teste de alteração do texto na linha de edição"
+  senao arg0 == "F5"
+    tela.texto += "_*"
+  senao arg0 == "F6"
+    tela.total -= 1
+  senao arg0 == "F7"
+    tela.total += 1
+  senao arg0 == "F8"
+    tela.msg("[" + tela.linha + "]")
+    #tela.linha = 1
+  senao arg0 == "F9"
+#tela.msg("[" + tela.linha + "]")
+    tela.linha += 1
+  senao
+    tela.msg(" " + arg0)
+    ret 0
+  fimse
+  ret 1
+func tela_msg
+  se tela.posx
+    tela.msg("\n")
+  fimse
+  tela.msg("Digitou: " + arg0 + "\n")

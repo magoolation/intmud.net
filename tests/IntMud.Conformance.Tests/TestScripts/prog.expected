@@ -1,0 +1,19 @@
+Digite o nome de uma variável ou:
+FIM          Encerrar o programa
+A, B ou C    Seleciona a classe
+0 [arquivo]  Lista classes de um arquivo - iniarq
+1 [texto]    Lista classes cujo nome começam com um texto - iniclasse
+2 [texto]    Lista as funções definidas na classe - inifunc
+3 [texto]    Lista todas as funções da classes - inifunctudo
+4 [texto]    Lista as funções na ordem em que aparecem na classe - inifunccl
+5            Lista as classes definidas na instrução herda - iniherda
+6            Lista todas as classes herdadas - iniherdatudo
+7            Lista todas as classes que herdam essa classe - iniherdainv
+8            Lista as linhas de uma classe - inilinha
+9 <texto>    Lista as linhas de uma funcao - inilinha
+10 <texto>   Lista o texto de uma constante - const
+11           Lista as classes
+I <funcao>   Move funcao para o início da classe
+F <funcao>   Move funcao para o fim da classe
+I <f1> <f2>  Move funcao 1 para antes da funcao 2
+F <f1> <f2>  Move funcao 1 para depois da funcao 2

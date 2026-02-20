@@ -1,0 +1,9 @@
+r= 1.7   nulo
+debug.exec = 5000  debug.func = 2
+Após debug.ini: 5000
+Mudando para 2000: 2000
+exec 1 = 
+x = 0
+exec 2 = 
+x=?
+Pressione ENTER para terminar

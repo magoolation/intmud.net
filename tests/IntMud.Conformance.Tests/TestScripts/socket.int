@@ -1,0 +1,114 @@
+err = 1
+
+classe config
+const ender = "localhost"
+const porta = 1963
+
+classe teste
+comum serv servidor
+socket conec
+socket remoto
+uint8 papovox
+txt512 ultimamens
+int8 repetemens
+const msg = conec.msg(arg0)
+func iniclasse
+  se ![arg0]:servidor.abrir("localhost", 2000)
+    terminar
+  fimse
+func servidor_socket
+  criar("teste", arg0)
+func ini
+  conec = arg0
+  msg("Comandos:\n")
+  msg("c=conectar Telnet\n")
+  msg("p=conectar Papovox\n")
+  msg("f=fechar conexão\n")
+  msg("i=informações\n")
+  msg("m seguido ou não de um texto = enviar mensagem\n")
+  msg("n para enviar 2 vezes, s para enviar 3 vezes\n")
+  msg("t=teste com socket.posx\n")
+  msg("e=encerrar o programa\n")
+func conec_msg
+  conec.msg("Você escreveu " + arg0 + "\n")
+  escr_[txt1(arg0)](txt2(arg0))
+const escr_c = escr_pc(0)
+const escr_p = escr_pc(1)
+func escr_pc
+  papovox = arg0
+  se remoto.abrir(config:ender, config:porta)
+    msg("Conectando\n")
+  senão
+    msg("Erro ao conectar\n")
+  fimse
+func escr_f
+  remoto.fechar
+  msg("Conexão fechada\n")
+func escr_m
+  remoto.msg(arg0 + "\n")
+  msg("> " + arg0 + "\n")
+func escr_n
+  ultimamens = arg0 + "\n"
+  repetemens = 1
+  remoto.msg(ultimamens)
+  msg(">> " + ultimamens)
+func escr_s
+  ultimamens = arg0 + "\n"
+  repetemens = 2
+  remoto.msg(ultimamens)
+  msg(">>> " + ultimamens)
+func escr_i
+  msg(escr_i[remoto.proto] + "\n")
+  msg("Endereço remoto: " + remoto.ip + "\n")
+  msg("Endereço local: " + remoto.iplocal + "\n")
+const escr_i0 = "Desconectado"
+const escr_i1 = "Conectando"
+const escr_i2 = "Conectado Telnet, linhas inteiras"
+const escr_i3 = "Conectado Telnet, linhas inteiras ou parciais"
+const escr_i4 = "Conectado IRC"
+const escr_i5 = "Conectado Papovox"
+const escr_i6 = "Conectado Tela"
+func escr_t
+  int8 x
+  int8 y
+  enquanto y<15
+    enquanto x<y
+      msg(x%10)
+      x += 1
+    efim
+    msg(" " + conec.posx + "\n")
+    x=0, y+=1
+  efim
+func escr_e
+  terminar
+func remoto_con
+  se papovox==0
+    msg("Conectado\n")
+  senao
+    msg("Conectado; esperando mensagem\n")
+  fimse
+func remoto_err
+  msg("Erro ao conectar: " + arg0 + "\n")
+func remoto_msg
+  msg("< " + arg0 + "\n")
+  se papovox == 1
+    papovox = 2
+    remoto.msg("OK\n")
+  senao papovox
+    papovox = 0
+    remoto.proto = 5
+    msg("Conectado via Papovox\n")
+  fimse
+func remoto_env
+  msg("Enviou\n")
+  se repetemens
+    repetemens -= 1
+    remoto.msg(ultimamens)
+    msg(">>\n")
+  fimse
+func remoto_fechou
+  msg("Conexão fechada remotamente\n")
+func escr_x # Teste para enviar mensagens grandes
+  remoto.msg("abc\ndef\nghi\njkl")
+func escr_y # Teste com mensagem sem \n no fim
+  remoto.msg("teste")

@@ -1,0 +1,18 @@
+listaobj lista
+  Lista está vazia
+lista.addfim($limão)
+  Lista contém: [limão]
+lista.addfim($tomate, $uva) - adiciona no fim da lista
+  Lista contém: [limão], [tomate], [uva]
+lista.addini($banana, $tomate) - adiciona no início da lista
+  Lista contém: [banana], [tomate], [limão], [tomate], [uva]
+lista.remove - sem argumentos remove objetos duplicados
+  Lista contém: [banana], [tomate], [limão], [tomate], [uva]
+lista.addfim(lista.objini) - adiciona primeiro objeto no fim da lista
+  Lista contém: [banana], [tomate], [limão], [tomate], [uva], [banana]
+lista.ini.remove - remove o primeiro objeto da lista
+  Lista contém: [tomate], [limão], [tomate], [uva], [banana]
+lista.remove($banana, $limao) - com argumentos remove objetos da lista
+  Lista contém: [tomate], [limão], [tomate], [uva]
+lista.limpar - Tira todos os objetos da lista
+  Lista contém: [tomate], [limão], [tomate], [uva]

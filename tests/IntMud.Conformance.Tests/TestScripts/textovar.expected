@@ -1,0 +1,11 @@
+Teste de textovar
+Opções:
+a variável=valor  Adiciona ou altera variável
+a variável        Apaga variável
+c      Lista variáveis em ordem crescente
+d      Lista variáveis em ordem decrescente
+l texto  Lista variáveis começadas com o texto
+v texto  Mostra uma variável
+e      Exclui todas as variáveis
+s      Salva variáveis em arquivo
+f      Sai do programa

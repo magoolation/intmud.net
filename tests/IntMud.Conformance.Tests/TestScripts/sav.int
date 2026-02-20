@@ -1,0 +1,123 @@
+err = 1
+
+classe teste
+comum serv servidor
+socket conec
+listaobj lista1
+
+const msg = conec.msg(arg0)
+func iniclasse
+  se ![arg0]:servidor.abrir("localhost", 2000)
+    terminar
+  fimse
+func servidor_socket
+  criar("teste", arg0)
+func ini
+  conec = arg0
+  msg("i <nome do arquivo> <senha> = mostrar informações\n")
+  msg("s <nome do arquivo> <senha> = salvar\n")
+  msg("l <nome do arquivo> = ler arquivo\n")
+  msg("a <nome do arquivo> = apaga arquivo\n")
+  msg("x y z = criar objetos x y z\n")
+  msg("o = mostrar objetos criados\n")
+  msg("o <número> = apagar objeto\n")
+  msg("o <número> <variável> <valor> = alterar uma variável de um objeto\n")
+  msg("fim = encerrar o programa\n")
+func conec_msg
+  escr_[txt1(arg0)](txt2(arg0))
+func escr_fim
+  terminar
+func escr_i
+  arqsav sav
+  msg("Arquivo=" + txt1(arg0) + " Senha=" + txt2(arg0) + "\n")
+  msg("Valido = " + sav.valido(txt1(arg0)) + "\n")
+  msg("Existe = " + sav.existe(txt1(arg0)) + "\n")
+  msg("Dias = " + sav.dias(txt1(arg0)) + "\n")
+  msg("Senha = " + sav.senha(txt1(arg0), txt2(arg0)) + "\n")
+func escr_s
+  arqsav sav
+  se sav.salvar(txt1(arg0), lista1, 10, txt2(arg0))
+    msg("Sucesso\n")
+  senão
+    msg("Falha\n")
+  fimse
+func escr_l
+  arqsav sav
+  int16 lido
+  lido = sav.ler(txt1(arg0), este.lista1)
+  msg("Objetos lidos: " + lido + "\n")
+func escr_a
+  arqsav sav
+  se(sav.apagar(arg0))
+    msg("Sucesso\n")
+  senão
+    msg("Falha\n")
+  fimse
+func escr_x
+  lista1.addfim(criar("x"))
+  msg("Criado objeto x\n")
+func escr_y
+  lista1.addfim(criar("y"))
+  msg("Criado objeto y\n")
+func escr_z
+  lista1.addfim(criar("z"))
+  msg("Criado objeto z\n")
+func escr_o
+  listaitem l
+  prog p
+  int16 num
+# Mostrar objetos e variáveis de lista1
+  se arg0 == ""
+    l = lista1.ini # Início da lista
+    se !l
+      msg("Nenhum objeto\n")
+    fimse
+    enquanto l
+      msg("Objeto " + num + " = " + l.obj + "\n")
+      p.inifunctudo(l.obj) # Primeira variável da classe
+      enquanto p.lin
+        se p.varsav(l.obj, p.texto)
+          msg("  " + p.texto + " = " + l.obj.[p.texto] + "\n")
+        fimse
+        p.depois
+      efim
+      num += 1
+      l.depois
+    efim
+    ret
+  fimse
+# Avançar para o objeto especificado
+  num = txt1(arg0)
+  l = lista1.ini
+  l.depois(num)
+  se !l
+    msg("Objeto número " + num + " não existe\n")
+    ret
+  fimse
+# Apagar objeto
+  se txt2(arg0) == ""
+    apagar(l.obj)
+    msg("Objeto número " + num + " apagado\n")
+    ret
+  fimse
+# Mudar variável do objeto
+  se !p.existe(l.obj, txt1(txt2(arg0)))
+    msg("Objeto " + l.obj + " não possui variável " + txt1(txt2(arg0)) + "\n")
+    ret
+  fimse
+  l.obj.[txt1(txt2(arg0))] = txt2(txt2(arg0))
+  msg("Variável " + txt1(txt2(arg0)) + " = " + l.obj.[txt1(txt2(arg0))] + "\n")
+
+classe x
+sav int8 x1
+int8 x2
+func ini
+  x1 = 10
+
+classe y
+sav int8 y1
+func ini
+  y1 = 20
+
+classe z
+sav txt20 texto

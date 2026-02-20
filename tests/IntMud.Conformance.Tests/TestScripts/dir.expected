@@ -1,0 +1,8 @@
+Tecle:
+p arquivo/diretório = pesquisar arquivo ou diretório
+c diretório = criar diretório
+d diretório = apagar diretório
+a arquivo = apagar arquivo
+r nome_antigo nome_novo = renomear arquivo ou diretório
+Exemplo:
+p .

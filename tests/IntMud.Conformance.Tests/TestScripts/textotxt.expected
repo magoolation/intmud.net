@@ -1,0 +1,20 @@
+Tecla F1 mostra menu de opções
+A Abre um arquivo txt
+S Salva o arquivo
+E edita linha atual
++ insere linha vazia
+- apaga linha atual
+Z mostra informações do arquivo e linha atual
+L ir para uma linha
+B comandos de bloco
+Setas sobem e descem uma linha no arquivo
+Espaço mostra o conteúdo da linha atual
+J junta com a linha anterior
+O ordena linhas em ordem alfabética
+V ordena somando linhas
+W ordena mostrando as quantidades
+R ordena aleatoriamente
+X soma linhas
+Y soma linhas mostrando as quantidades
+D divide linhas grandes
+Qual sua opção?

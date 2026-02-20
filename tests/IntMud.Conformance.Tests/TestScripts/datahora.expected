@@ -1,0 +1,10 @@
+Opções:
+X Muda a data atual para agora
+I informa data
+A avança um dia
+R recua um dia
+D aaaammdd muda a data; exemplo: D 20091025
+H hhmmss muda a hora; exemplo: H 124530
+ND xxxx  Muda data conforme número de dias
+NS xxxx  Muda hora conforme número de segundos
+NT xxxx  Muda hora conforme segundos desde 1/1/1

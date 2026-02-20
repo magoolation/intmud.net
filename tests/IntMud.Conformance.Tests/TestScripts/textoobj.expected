@@ -1,0 +1,13 @@
+Teste de textoobj
+Opções:
+o - mostra os objetos
+o <nome do objeto> - cria ou apaga objeto
+v - mostra as variáveis
+v <nome> <nome do objeto> - cria variável
+v <nome> - apaga variável
+a <nome> - apaga variáveis que começam com o nome
+aa <nome> - apaga objetos das variáveis que começam com o nome
+s - salva em arquivo
+c - carrega do arquivo
+x - limpa tudo
+Tecla ESC - encerra o programa
