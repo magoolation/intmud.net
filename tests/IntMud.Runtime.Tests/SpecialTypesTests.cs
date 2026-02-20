@@ -62,6 +62,8 @@ public class SpecialTypeRegistryTests
     [InlineData("telatxt")]
     [InlineData("serv")]
     [InlineData("debug")]
+    [InlineData("socket")]
+    [InlineData("arqexec")]
     public void IsSpecialType_ReturnsTrue_ForSpecialTypes(string typeName)
     {
         Assert.True(SpecialTypeRegistry.IsSpecialType(typeName));
@@ -71,7 +73,6 @@ public class SpecialTypeRegistryTests
     [InlineData("int32")]
     [InlineData("txt100")]
     [InlineData("real")]
-    [InlineData("socket")]
     public void IsSpecialType_ReturnsFalse_ForRegularTypes(string typeName)
     {
         Assert.False(SpecialTypeRegistry.IsSpecialType(typeName));

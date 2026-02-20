@@ -482,3 +482,10 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Claude Code temp files
+tmpclaude-*
+
+# Temp test files
+test_output.txt
+testar_teclado.bat

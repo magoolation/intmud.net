@@ -2766,22 +2766,26 @@ func classReference
         Assert.Equal("config", ast.Classes[0].Name);
         Assert.Equal("teste", ast.Classes[1].Name);
 
-        var unit = BytecodeCompiler.Compile(ast);
+        // Compile all classes
+        var units = BytecodeCompiler.CompileAll(ast);
+        Assert.Equal(2, units.Count);
 
-        var interpreter = new BytecodeInterpreter(unit);
+        // Get the 'teste' class unit (which contains ini, validar, classReference functions)
+        var testeUnit = units.First(u => u.ClassName == "teste");
+        var interpreter = new BytecodeInterpreter(testeUnit);
 
         // Test ini function with else-if
         var result = interpreter.Execute("ini");
         Assert.Equal("cinco", result.AsString());
 
         // Test conditional return
-        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(0) });
+        result = interpreter.ExecuteFunction(testeUnit.Functions["validar"], new[] { RuntimeValue.FromInt(0) });
         Assert.True(result.IsNull);
 
-        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(-5) });
+        result = interpreter.ExecuteFunction(testeUnit.Functions["validar"], new[] { RuntimeValue.FromInt(-5) });
         Assert.Equal("negativo", result.AsString());
 
-        result = interpreter.ExecuteFunction(unit.Functions["validar"], new[] { RuntimeValue.FromInt(10) });
+        result = interpreter.ExecuteFunction(testeUnit.Functions["validar"], new[] { RuntimeValue.FromInt(10) });
         Assert.Equal("positivo", result.AsString());
     }
 
@@ -3178,6 +3182,89 @@ func test
         _output.WriteLine($"\nTotal unique function names: {functionCalls.Count}");
         _output.WriteLine($"Implemented: {implementedFunctions.Count}");
         _output.WriteLine($"Potentially missing (5+ calls): {missingFunctions.Count}");
+    }
+
+    #endregion
+
+    #region Iniclasse Tests
+
+    [Fact]
+    public void ParseAndCompile_Iniclasse_Works()
+    {
+        var source = @"
+classe teste
+telatxt tela
+
+func iniclasse
+  criar(arg0)
+
+func ini
+  tela.msg(""Ola"")
+
+func tela_tecla
+  tela.msg(""Tecla: "" + arg0)
+  ret 1
+";
+        var parser = new IntMudSourceParser();
+        var ast = parser.Parse(source, "test.int");
+
+        _output.WriteLine($"Classes: {ast.Classes.Count}");
+        foreach (var cls in ast.Classes)
+        {
+            _output.WriteLine($"  Class: {cls.Name}");
+            foreach (var member in cls.Members)
+            {
+                if (member is FunctionDefinitionNode fn)
+                    _output.WriteLine($"    Function: {fn.Name}");
+                else if (member is VariableDeclarationNode vd)
+                    _output.WriteLine($"    Variable: {vd.Name} ({vd.TypeName})");
+            }
+        }
+
+        Assert.Single(ast.Classes);
+        Assert.Equal("teste", ast.Classes[0].Name);
+
+        var cls0 = ast.Classes[0];
+        var functions = cls0.Members.OfType<FunctionDefinitionNode>().ToList();
+        var variables = cls0.Members.OfType<VariableDeclarationNode>().ToList();
+
+        _output.WriteLine($"\nFunctions count: {functions.Count}");
+        _output.WriteLine($"Variables count: {variables.Count}");
+
+        foreach (var fn in functions)
+        {
+            _output.WriteLine($"  Function name: '{fn.Name}'");
+        }
+
+        // Verify we have 3 functions
+        Assert.Equal(3, functions.Count);
+        Assert.Contains(functions, f => f.Name == "iniclasse");
+        Assert.Contains(functions, f => f.Name == "ini");
+        Assert.Contains(functions, f => f.Name == "tela_tecla");
+
+        // Verify variable
+        Assert.Single(variables);
+        Assert.Equal("tela", variables[0].Name);
+        Assert.Equal("telatxt", variables[0].TypeName);
+
+        // Compile
+        var unit = BytecodeCompiler.Compile(ast);
+
+        _output.WriteLine($"\n=== Compiled Unit ===");
+        _output.WriteLine($"Functions: {unit.Functions.Count}");
+        foreach (var fn in unit.Functions.Keys)
+        {
+            _output.WriteLine($"  {fn}");
+        }
+        _output.WriteLine($"Variables: {unit.Variables.Count}");
+        foreach (var v in unit.Variables)
+        {
+            _output.WriteLine($"  {v.Name} ({v.TypeName})");
+        }
+
+        Assert.True(unit.Functions.ContainsKey("iniclasse"), "Should have iniclasse function");
+        Assert.True(unit.Functions.ContainsKey("ini"), "Should have ini function");
+        Assert.True(unit.Functions.ContainsKey("tela_tecla"), "Should have tela_tecla function");
     }
 
     #endregion
