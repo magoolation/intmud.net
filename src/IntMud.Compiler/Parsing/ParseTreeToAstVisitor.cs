@@ -57,7 +57,7 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
 
     public override AstNode VisitClassDefinition(IntMudParser.ClassDefinitionContext context)
     {
-        var name = GetIdentifier(context.identifier());
+        var name = GetClassName(context.className());
         var node = new ClassDefinitionNode { Name = name };
         SetLocation(node, context);
 
@@ -65,9 +65,9 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         var inherit = context.inheritClause();
         if (inherit != null)
         {
-            foreach (var id in inherit.identifierList().identifier())
+            foreach (var cn in inherit.classNameList().className())
             {
-                node.BaseClasses.Add(GetIdentifier(id));
+                node.BaseClasses.Add(GetClassName(cn));
             }
         }
 
@@ -258,19 +258,45 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         }
 
         // Else-if clauses
+        // NOTE: The grammar is ambiguous between elseIfClause (SENAO expression statement*)
+        // and elseClause (SENAO statement*). Since ANTLR greedily matches elseIfClause first,
+        // a plain "senao" followed by statements on the NEXT line gets mis-parsed as elseIfClause
+        // with the first statement treated as the condition expression.
+        // Fix: check if the expression is on the SAME line as SENAO. If not, treat as else body.
         foreach (var elseIf in context.elseIfClause())
         {
-            var clause = new ElseIfClause
+            var senaoLine = elseIf.SENAO().Symbol.Line;
+            var exprLine = elseIf.expression().Start.Line;
+
+            if (senaoLine == exprLine)
             {
-                Condition = VisitExpression(elseIf.expression())
-            };
-            foreach (var stmt in elseIf.statement())
-            {
-                var stmtNode = VisitStatement(stmt);
-                if (stmtNode != null)
-                    clause.Body.Add(stmtNode);
+                // True else-if: condition expression is on the same line as senao
+                var clause = new ElseIfClause
+                {
+                    Condition = VisitExpression(elseIf.expression())
+                };
+                foreach (var stmt in elseIf.statement())
+                {
+                    var stmtNode = VisitStatement(stmt);
+                    if (stmtNode != null)
+                        clause.Body.Add(stmtNode);
+                }
+                node.ElseIfClauses.Add(clause);
             }
-            node.ElseIfClauses.Add(clause);
+            else
+            {
+                // Mis-parsed else clause: expression is really the first statement of else body
+                var exprNode = VisitExpression(elseIf.expression());
+                var exprStmt = new ExpressionStatementNode { Line = exprLine };
+                exprStmt.Expressions.Add(exprNode);
+                node.ElseBody.Add(exprStmt);
+                foreach (var stmt in elseIf.statement())
+                {
+                    var stmtNode = VisitStatement(stmt);
+                    if (stmtNode != null)
+                        node.ElseBody.Add(stmtNode);
+                }
+            }
         }
 
         // Else clause
@@ -1084,14 +1110,31 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
             return node;
         }
 
-        if (context.STRING() != null)
+        if (context.STRING() != null && context.STRING().Length > 0)
         {
-            var text = context.STRING().GetText();
-            // Remove quotes and process escape sequences
-            var value = ProcessString(text[1..^1]);
-            var node = new StringLiteralNode { Value = value };
-            SetLocation(node, context);
-            return node;
+            var strings = context.STRING();
+            if (strings.Length == 1)
+            {
+                var text = strings[0].GetText();
+                // Remove quotes and process escape sequences
+                var value = ProcessString(text[1..^1]);
+                var node = new StringLiteralNode { Value = value };
+                SetLocation(node, context);
+                return node;
+            }
+            else
+            {
+                // Adjacent string concatenation: "abc" "def" = "abcdef"
+                var sb = new System.Text.StringBuilder();
+                foreach (var s in strings)
+                {
+                    var text = s.GetText();
+                    sb.Append(ProcessString(text[1..^1]));
+                }
+                var node = new StringLiteralNode { Value = sb.ToString() };
+                SetLocation(node, context);
+                return node;
+            }
         }
 
         if (context.LPAREN() != null)
@@ -1237,6 +1280,19 @@ internal class ParseTreeToAstVisitor : IntMudParserBaseVisitor<AstNode>
         if (context.contextualKeyword() != null)
             return context.contextualKeyword().GetText();
         throw new InvalidOperationException("Invalid identifier");
+    }
+
+    private static string GetClassName(IntMudParser.ClassNameContext context)
+    {
+        // Handle COMUM as a class name (e.g., "herda comum")
+        if (context.COMUM() != null)
+            return context.COMUM().GetText();
+
+        var ids = context.IDENTIFIER();
+        if (ids.Length == 1)
+            return ids[0].GetText();
+        // Multi-word class name: join with space
+        return string.Join(" ", ids.Select(id => id.GetText()));
     }
 
     private static string GetExtendedIdentifier(IntMudParser.ExtendedIdentifierContext context)

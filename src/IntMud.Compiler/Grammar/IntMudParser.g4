@@ -25,6 +25,36 @@ options {
         }
         return true; // No newline found - allow postfix
     }
+
+    /// <summary>
+    /// Check if we're NOT at the start of a class definition (CLASSE followed by identifier).
+    /// Used to prevent statements from consuming what should be a new class definition.
+    /// </summary>
+    private bool NotClassDefinitionStart()
+    {
+        // If current token is not CLASSE, we're definitely not at a class definition start
+        if (CurrentToken.Type != IntMudLexer.CLASSE)
+            return true;
+
+        // Current token is CLASSE - check if next visible token is an identifier
+        var stream = (ITokenStream)InputStream;
+        int i = CurrentToken.TokenIndex + 1;
+
+        // Skip hidden tokens to find next visible token
+        while (i < stream.Size)
+        {
+            var token = stream.Get(i);
+            if (token.Channel == Lexer.DefaultTokenChannel)
+            {
+                // Found next visible token - if it's an identifier, this is a class definition
+                if (token.Type == IntMudLexer.IDENTIFIER)
+                    return false; // This IS a class definition start, don't match as statement
+                break;
+            }
+            i++;
+        }
+        return true; // Not a class definition start
+    }
 }
 
 // ============================================================================
@@ -42,7 +72,11 @@ fileOption
     | LOG EQ DECIMAL_NUMBER
     | ERR EQ DECIMAL_NUMBER
     | COMPLETO EQ DECIMAL_NUMBER
-    | ARQEXEC EQ STRING
+    | ARQEXEC EQ (STRING | arqExecCommand)
+    ;
+
+arqExecCommand
+    : (IDENTIFIER | contextualKeyword) (IDENTIFIER | contextualKeyword | STAR)*
     ;
 
 filePath
@@ -54,11 +88,23 @@ filePath
 // ============================================================================
 
 classDefinition
-    : CLASSE identifier inheritClause? classMember*
+    : CLASSE className inheritClause? classMember*
     ;
 
 inheritClause
-    : HERDA identifierList
+    : HERDA classNameList
+    ;
+
+// Class names can be multi-word (e.g., "bom dia", "abc def")
+// Uses IDENTIFIER+ so keywords stop the match naturally
+// COMUM is allowed as a class name (common base class pattern: "herda comum")
+className
+    : IDENTIFIER+
+    | COMUM
+    ;
+
+classNameList
+    : className (COMMA className)*
     ;
 
 identifierList
@@ -159,18 +205,20 @@ varConstDefinition
 // ============================================================================
 
 statement
-    : variableDeclaration
-    | refVarDeclaration
-    | ifStatement
-    | whileStatement
-    | forStatement
-    | foreachStatement
-    | switchStatement
-    | returnStatement
-    | exitStatement
-    | continueStatement
-    | terminateStatement
-    | expressionStatement
+    : {NotClassDefinitionStart()}? (
+        variableDeclaration
+        | refVarDeclaration
+        | ifStatement
+        | whileStatement
+        | forStatement
+        | foreachStatement
+        | switchStatement
+        | returnStatement
+        | exitStatement
+        | continueStatement
+        | terminateStatement
+        | expressionStatement
+    )
     ;
 
 refVarDeclaration
@@ -377,7 +425,7 @@ primaryExpression
     | ARGS
     | DECIMAL_NUMBER
     | HEX_NUMBER
-    | STRING
+    | STRING+                          // Adjacent strings are concatenated: "abc" "def" = "abcdef"
     | LPAREN expression RPAREN
     | classReference
     | dollarReference
@@ -446,6 +494,8 @@ identifier
     ;
 
 // Keywords that can be used as identifiers in certain contexts
+// CLASSE can be used as identifier (e.g., const classe = "...") but the statement
+// rule uses NotClassDefinitionStart() predicate to prevent it from starting statements
 contextualKeyword
     : INCLUIR
     | EXEC
@@ -459,17 +509,19 @@ contextualKeyword
     | TXT        // txt1(), txt2() are built-in functions
     | REF        // ref() is a built-in function
     | APAGAR     // apagar() is a method name
-    | CLASSE     // classe can be used in expressions like .classe
     | SAV        // sav can be used as identifier
     | NOVO       // novo can be used as identifier
     | ARG        // arg0-arg9 can be used as member name (e.g., contr.arg0)
     | COMUM      // comum can be used as class name in class references (comum:member)
     | PARA       // para can be used as function name (e.g., func para)
+    | CLASSE     // Can be used as identifier (e.g., const classe = "name")
     ;
 
 // Identifiers that can be used as member names (after .)
+// CLASSE is included via contextualKeyword for expressions like obj.classe
 memberIdentifier
     : IDENTIFIER
     | contextualKeyword
     | FUNC       // func can be used as member name (e.g., arg0.func)
+    | CONST      // const can be used as member name (e.g., prog.const)
     ;

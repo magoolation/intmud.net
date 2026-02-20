@@ -12,6 +12,7 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     private readonly CompilerScope _globalScope;
     private CompilerScope _currentScope;
     private CompiledFunction? _currentFunction;
+    private readonly HashSet<string> _knownFunctions = new(StringComparer.OrdinalIgnoreCase);
 
     public BytecodeCompiler(string className)
     {
@@ -82,6 +83,17 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     public object? VisitClassDefinition(ClassDefinitionNode node)
     {
         _unit.BaseClasses.AddRange(node.BaseClasses);
+
+        // Pre-register all function names BEFORE compiling any function bodies.
+        // This allows bare function names like "info_menu" to be recognized as
+        // function calls (emitting Call opcode) instead of variable loads (LoadGlobal).
+        foreach (var member in node.Members)
+        {
+            if (member is FunctionDefinitionNode funcNode)
+            {
+                _knownFunctions.Add(funcNode.Name);
+            }
+        }
 
         foreach (var member in node.Members)
         {
@@ -349,6 +361,15 @@ public sealed class BytecodeCompiler : IAstVisitor<object?>
     internal bool IsInstanceVariable(string name)
     {
         return _unit.Variables.Any(v => string.Equals(v.Name, name, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Check if a name is a known function in this class.
+    /// This includes functions that haven't been fully compiled yet (forward references).
+    /// </summary>
+    internal bool IsKnownFunction(string name)
+    {
+        return _knownFunctions.Contains(name);
     }
 
     private static int GetTypeSize(string typeName, int vectorSize)
@@ -768,8 +789,76 @@ internal sealed class StatementCompiler : IAstVisitor<object?>
             CompileExpression(node.Initializer);
             _emitter.EmitStoreLocal(index);
         }
+        else
+        {
+            // For special types, emit initialization code even without explicit initializer
+            // This matches original IntMUD behavior where declaring "telatxt tela" creates an instance
+            var lowerType = node.TypeName.ToLowerInvariant();
+            if (IsSpecialType(lowerType))
+            {
+                // Emit a special type initialization instruction
+                _emitter.EmitInitSpecialType(lowerType);
+                _emitter.EmitStoreLocal(index);
+            }
+            else if (IsPrimitiveType(lowerType))
+            {
+                // Initialize primitive types to their default values (0, 0.0, "")
+                // This matches original IntMUD behavior where int8 lido creates lido=0
+                EmitPrimitiveDefault(lowerType);
+                _emitter.EmitStoreLocal(index);
+            }
+        }
 
         return null;
+    }
+
+    /// <summary>
+    /// Check if a type name is a primitive type (integer, float, string).
+    /// </summary>
+    private static bool IsPrimitiveType(string typeName)
+    {
+        return typeName switch
+        {
+            "int1" or "int8" or "int16" or "int32" or "int64" or
+            "uint1" or "uint8" or "uint16" or "uint32" or "uint64" or
+            "real" or "real32" or "real64" or
+            "txt" or "txt8" or "txt16" or "txt32" or "txt64" or "txt120" or "txt255" => true,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// Emit the default value for a primitive type.
+    /// </summary>
+    private void EmitPrimitiveDefault(string typeName)
+    {
+        if (typeName.StartsWith("txt"))
+        {
+            _emitter.EmitPushString("");
+        }
+        else if (typeName.StartsWith("real"))
+        {
+            _emitter.EmitPushDouble(0.0);
+        }
+        else
+        {
+            // All integer types default to 0
+            _emitter.EmitPushInt(0);
+        }
+    }
+
+    /// <summary>
+    /// Check if a type name is a special type that needs automatic initialization.
+    /// </summary>
+    private static bool IsSpecialType(string typeName)
+    {
+        return typeName switch
+        {
+            "telatxt" or "textotxt" or "textopos" or "listaobj" or "listaitem" or
+            "indiceobj" or "indiceitem" or "inttempo" or "intexec" or "intinc" or
+            "datahora" or "debug" or "arqtxt" or "arqsav" or "serv" or "socket" => true,
+            _ => false
+        };
     }
 
     private void CompileExpression(ExpressionNode expr)
@@ -1088,6 +1177,13 @@ internal sealed class ExpressionCompiler : IAstVisitor<object?>
                     {
                         _emitter.EmitLoadThis();
                         _emitter.EmitLoadField(id.Name);
+                    }
+                    // Check if this is a function name - if so, emit a call instead of load
+                    // This handles bare function calls like "info_menu" which should call the function
+                    // Uses IsKnownFunction which checks pre-registered names (supports forward references)
+                    else if (_compiler.IsKnownFunction(id.Name))
+                    {
+                        _emitter.EmitCall(id.Name, 0);
                     }
                     else
                     {

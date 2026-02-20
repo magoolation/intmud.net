@@ -112,6 +112,7 @@ public enum BytecodeOp : byte
     Terminate = 120,
     Debug = 121,
     Line = 122,         // followed by 2-byte line number (for debugging)
+    InitSpecialType = 123, // followed by 2-byte string pool index (type name)
 }
 
 /// <summary>
@@ -509,6 +510,17 @@ public sealed class BytecodeEmitter
     {
         _writer.Write((byte)BytecodeOp.Line);
         _writer.Write((ushort)line);
+    }
+
+    /// <summary>
+    /// Emit InitSpecialType - creates a new instance of a special type.
+    /// Stack: [] -> [instance]
+    /// </summary>
+    public void EmitInitSpecialType(string typeName)
+    {
+        var index = AddString(typeName);
+        _writer.Write((byte)BytecodeOp.InitSpecialType);
+        _writer.Write((ushort)index);
     }
 
     // Break/Continue support
