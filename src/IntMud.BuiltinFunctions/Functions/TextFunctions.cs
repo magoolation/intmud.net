@@ -20,7 +20,7 @@ public class TextFunctions : IBuiltinFunction
         // Search and replace
         "txtproc", "txtprocmai", "txtprocdif",
         "txtproclin", "txtproclinmai", "txtproclindif",
-        "txtroca", "txtrocamai", "txtrocadif",
+        "txttroca", "txttrocamai", "txttrocadif",
         // Utility functions
         "txtlen", "txtvazio", "txtnum", "txttrim", "txtcor",
         "txtsepara", "txtletra", "txtpalav", "txtlinha",
@@ -74,9 +74,9 @@ public class TextFunctions : IBuiltinFunction
             "txtproclindif" => ExecuteTxtProcLinDif(args),
 
             // Replace functions
-            "txtroca" => ExecuteTxtRoca(args),
-            "txtrocamai" => ExecuteTxtRocaMai(args),
-            "txtrocadif" => ExecuteTxtRocaDif(args),
+            "txttroca" => ExecuteTxtRoca(args),
+            "txttrocamai" => ExecuteTxtRocaMai(args),
+            "txttrocadif" => ExecuteTxtRocaDif(args),
 
             // Utility functions
             "txtlen" => ExecuteTxtLen(args),

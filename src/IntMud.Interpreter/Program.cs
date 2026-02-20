@@ -72,10 +72,8 @@ class Program
         var baseName = Path.GetFileNameWithoutExtension(mainIntFile);
         Environment.CurrentDirectory = baseDir;
 
-        Console.WriteLine("IntMUD Interpreter - Console Mode");
-        Console.WriteLine($"Main file: {mainIntFile}");
-        Console.WriteLine($"Base directory: {baseDir}");
-        Console.WriteLine();
+        // Note: Original IntMUD C++ is silent - all output comes from the IntMUD program itself.
+        // No interpreter messages are printed.
 
         try
         {
@@ -109,6 +107,9 @@ class MudInterpreter
     private IntMudConfig? _config;
     private IntMudRuntime? _runtime;
     private bool _running;
+    private bool _isInteractive;
+    private readonly Queue<string> _pendingKeys = new();
+    private StreamReader? _stdinReader;
 
     public MudInterpreter(string mainFile, string baseDir, string baseName)
     {
@@ -127,21 +128,25 @@ class MudInterpreter
 
         if (_compiledUnits.Count == 0)
         {
-            Console.WriteLine("No classes loaded. Nothing to run.");
+            // Nothing to run - no classes found
             return;
         }
 
-        Console.WriteLine($"Loaded {_compiledUnits.Count} classes.");
-        Console.WriteLine();
-
-        // Check if telatxt is enabled
-        if (_config != null && !_config.TelaTxt)
+        // Detect if running interactively or with piped input
+        try
         {
-            Console.WriteLine("Warning: telatxt is disabled in configuration.");
-            Console.WriteLine("Running in headless mode (no console interaction).");
+            _isInteractive = !Console.IsInputRedirected;
+        }
+        catch
+        {
+            _isInteractive = false;
         }
 
-        Console.WriteLine("Initializing...");
+        // Set up stdin reader for non-interactive mode
+        if (!_isInteractive)
+        {
+            _stdinReader = new StreamReader(Console.OpenStandardInput(), Encoding.Latin1);
+        }
 
         // Create and start the runtime
         _runtime = new IntMudRuntime(_compiledUnits);
@@ -152,11 +157,6 @@ class MudInterpreter
         // Initialize (calls iniclasse on all classes)
         _runtime.Initialize();
 
-        Console.WriteLine($"Created {_runtime.Instances.Count} instances with special types.");
-        Console.WriteLine();
-        Console.WriteLine("Starting event loop. Press ESC to exit.");
-        Console.WriteLine();
-
         // Start the runtime (this starts the event loop)
         _running = true;
         _runtime.Start();
@@ -164,34 +164,45 @@ class MudInterpreter
         // Wait for termination
         while (_running)
         {
-            await Task.Delay(100);
+            // In non-interactive mode, read lines from stdin and queue them as key presses
+            if (!_isInteractive && _stdinReader != null && _pendingKeys.Count == 0)
+            {
+                try
+                {
+                    var line = await _stdinReader.ReadLineAsync();
+                    if (line != null)
+                    {
+                        // Queue each character followed by ENTER
+                        foreach (var c in line)
+                        {
+                            _pendingKeys.Enqueue(c.ToString());
+                        }
+                        _pendingKeys.Enqueue("ENTER");
+                    }
+                    else
+                    {
+                        // End of stdin - stop running
+                        _running = false;
+                    }
+                }
+                catch
+                {
+                    _running = false;
+                }
+            }
+            await Task.Delay(10);
         }
 
         _runtime.Stop();
-        Console.WriteLine();
-        Console.WriteLine("Interpreter stopped.");
     }
 
     private async Task LoadConfigurationAsync()
     {
-        Console.WriteLine($"Reading configuration from: {Path.GetFileName(_mainFile)}");
-
         var content = await File.ReadAllTextAsync(_mainFile, Encoding.Latin1);
 
         // Parse configuration (lines before first 'classe' definition)
         var configParser = new IntMudConfigParser();
         _config = configParser.Parse(content, _mainFile);
-
-        Console.WriteLine($"  telatxt = {(_config.TelaTxt ? "1" : "0")}");
-        Console.WriteLine($"  exec = {_config.ExecLimit}");
-        Console.WriteLine($"  log = {_config.LogMode}");
-        Console.WriteLine($"  err = {_config.ErrorMode}");
-        Console.WriteLine($"  completo = {(_config.FullAccess ? "1" : "0")}");
-
-        if (_config.Includes.Count > 0)
-        {
-            Console.WriteLine($"  incluir: {string.Join(", ", _config.Includes)}");
-        }
     }
 
     private async Task LoadSourceFilesAsync()
@@ -210,11 +221,6 @@ class MudInterpreter
                 if (Directory.Exists(includePath))
                 {
                     includeDirs.Add(includePath);
-                    Console.WriteLine($"  Include directory: {normalizedInclude}");
-                }
-                else
-                {
-                    Console.WriteLine($"  Warning: Include directory not found: {normalizedInclude}");
                 }
             }
         }
@@ -229,9 +235,9 @@ class MudInterpreter
                 var files = Directory.GetFiles(dir, "*.int", SearchOption.AllDirectories);
                 allFiles.AddRange(files);
             }
-            catch (Exception ex)
+            catch
             {
-                Console.WriteLine($"  Warning: Error scanning {dir}: {ex.Message}");
+                // Silently ignore directory scan errors (like original IntMUD)
             }
         }
 
@@ -243,81 +249,53 @@ class MudInterpreter
             allFiles.Insert(0, _mainFile);
         }
 
-        Console.WriteLine($"Found {allFiles.Count} source files.");
-        Console.Out.Flush();
-
-        // Compile all files
+        // Compile all files (silently, like original IntMUD)
         var parser = new IntMudSourceParser();
-        var errorCount = 0;
-        var classCount = 0;
-        var fileNum = 0;
 
         foreach (var file in allFiles)
         {
-            fileNum++;
-            var relativePath = GetRelativePath(file);
-            Console.Write($"  [{fileNum}/{allFiles.Count}] {relativePath}...");
-            Console.Out.Flush();
             try
             {
-                var source = File.ReadAllText(file, Encoding.Latin1);
-                Console.Write(" parsing...");
-                Console.Out.Flush();
+                var source = await File.ReadAllTextAsync(file, Encoding.Latin1);
                 var ast = parser.Parse(source, file);
 
                 if (ast.Classes.Count > 0)
                 {
                     try
                     {
-                        Console.Write(" compiling...");
-                        Console.Out.Flush();
                         // Compile ALL classes in the file (each class gets its own unit)
                         var units = BytecodeCompiler.CompileAll(ast);
                         foreach (var unit in units)
                         {
                             _compiledUnits[unit.ClassName] = unit;
-                            classCount++;
                         }
-                        Console.WriteLine(" OK");
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        errorCount++;
-                        Console.WriteLine($" ERROR: {ex.Message}");
+                        // Silently ignore compile errors (like original IntMUD)
                     }
                 }
-                else
-                {
-                    Console.WriteLine(" (no classes)");
-                }
             }
-            catch (Exception ex)
+            catch
             {
-                errorCount++;
-                Console.WriteLine($" PARSE ERROR: {ex.Message}");
+                // Silently ignore parse errors (like original IntMUD)
             }
         }
-
-        Console.WriteLine($"Compiled {classCount} classes.");
-
-        if (errorCount > 0)
-        {
-            Console.WriteLine($"Warning: {errorCount} compilation errors.");
-        }
-    }
-
-    private string GetRelativePath(string fullPath)
-    {
-        if (fullPath.StartsWith(_baseDir, StringComparison.OrdinalIgnoreCase))
-        {
-            var relative = fullPath[_baseDir.Length..].TrimStart(Path.DirectorySeparatorChar);
-            return relative;
-        }
-        return fullPath;
     }
 
     private string? ReadKey()
     {
+        // For non-interactive mode, return queued keys
+        if (!_isInteractive)
+        {
+            if (_pendingKeys.Count > 0)
+            {
+                return _pendingKeys.Dequeue();
+            }
+            return null;
+        }
+
+        // Interactive mode - read from console
         try
         {
             // Console.KeyAvailable throws in non-interactive terminals

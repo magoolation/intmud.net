@@ -264,8 +264,9 @@ public sealed class IntMudEngine : IDisposable
 
     private void OnRuntimeOutput(string text)
     {
-        // Write to console
+        // Write to console and flush immediately (like original IntMUD)
         Console.Write(text);
+        Console.Out.Flush();
     }
 
     private string? OnRuntimeReadKey()
