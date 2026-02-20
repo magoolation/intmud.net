@@ -78,6 +78,11 @@ public sealed class IntMudRuntime : IDisposable
         // This means: if no object of class arg0 exists, create one
         CallIniclasseOnAllClasses();
 
+        // Auto-create instances for classes with special type variables (inttempo, telatxt, etc.)
+        // that weren't already instantiated by iniclasse. This handles classes that define
+        // event-driven variables but don't have an explicit iniclasse.
+        AutoCreateSpecialTypeInstances();
+
         // Now synchronize: get all objects created by iniclasse and add to runtime
         SyncObjectsFromRegistry();
     }
@@ -147,6 +152,40 @@ public sealed class IntMudRuntime : IDisposable
     }
 
     /// <summary>
+    /// Auto-create instances for classes with special type variables that weren't
+    /// already instantiated by iniclasse. This ensures event-driven types (inttempo,
+    /// telatxt, intexec, serv, debug, etc.) are always available.
+    /// </summary>
+    private void AutoCreateSpecialTypeInstances()
+    {
+        foreach (var (className, unit) in _compiledUnits)
+        {
+            // Skip if already instantiated by iniclasse
+            if (GlobalObjectRegistry.GetFirstObject(className) != null)
+                continue;
+
+            // Check if this class has any special type variables
+            bool hasSpecialType = unit.Variables.Any(v => SpecialTypeRegistry.IsSpecialType(v.TypeName));
+            if (!hasSpecialType)
+                continue;
+
+            // Auto-create an instance and register its special types
+            try
+            {
+                var instance = CreateInstance(className);
+                if (instance != null)
+                {
+                    RegisterSpecialTypes(instance, unit);
+                }
+            }
+            catch (Exception ex)
+            {
+                OnOutput?.Invoke($"Error auto-creating {className}: {ex.Message}\n");
+            }
+        }
+    }
+
+    /// <summary>
     /// Create an instance of a class.
     /// </summary>
     public BytecodeRuntimeObject? CreateInstance(string className)
@@ -204,7 +243,94 @@ public sealed class IntMudRuntime : IDisposable
             {
                 _consoleInstances.Add(new ConsoleInstance(instance, variable.Name));
             }
+            else if (SpecialTypeRegistry.IsSocketType(variable.TypeName))
+            {
+                WireSocketEvents(instance, variable.Name);
+            }
+            else if (SpecialTypeRegistry.IsServerType(variable.TypeName))
+            {
+                WireServEvents(instance, variable.Name);
+            }
+            else if (SpecialTypeRegistry.IsArqExecType(variable.TypeName))
+            {
+                WireArqExecEvents(instance, variable.Name);
+            }
         }
+    }
+
+    /// <summary>
+    /// Wire socket instance events to the script event queue.
+    /// Socket events: {varname}_msg(text, index), {varname}_fechou(text, index)
+    /// </summary>
+    private void WireSocketEvents(BytecodeRuntimeObject owner, string variableName)
+    {
+        var fieldValue = owner.GetField(variableName);
+        if (fieldValue.AsObject() is not SocketInstance socket)
+            return;
+
+        socket.OnMessage += text =>
+        {
+            _specialTypes.EnqueueEvent(new PendingScriptEvent(
+                owner,
+                $"{variableName}_msg",
+                RuntimeValue.FromString(text)));
+        };
+
+        socket.OnFechado += reason =>
+        {
+            _specialTypes.EnqueueEvent(new PendingScriptEvent(
+                owner,
+                $"{variableName}_fechou",
+                RuntimeValue.FromString(reason)));
+        };
+    }
+
+    /// <summary>
+    /// Wire server instance events to the script event queue.
+    /// Server events: {varname}_socket(socket, index)
+    /// </summary>
+    private void WireServEvents(BytecodeRuntimeObject owner, string variableName)
+    {
+        var fieldValue = owner.GetField(variableName);
+        if (fieldValue.AsObject() is not ServInstance serv)
+            return;
+
+        serv.OnSocketConnected += newSocket =>
+        {
+            // The C++ creates a temporary socket variable as argument
+            // In .NET, we pass the socket instance as a RuntimeValue object reference
+            _specialTypes.EnqueueEvent(new PendingScriptEvent(
+                owner,
+                $"{variableName}_socket",
+                RuntimeValue.FromObject(newSocket)));
+        };
+    }
+
+    /// <summary>
+    /// Wire arqexec instance events to the script event queue.
+    /// ArqExec events: {varname}_msg(text, index), {varname}_fechou(exitcode, index)
+    /// </summary>
+    private void WireArqExecEvents(BytecodeRuntimeObject owner, string variableName)
+    {
+        var fieldValue = owner.GetField(variableName);
+        if (fieldValue.AsObject() is not ArqExecInstance arqExec)
+            return;
+
+        arqExec.OnMessage += text =>
+        {
+            _specialTypes.EnqueueEvent(new PendingScriptEvent(
+                owner,
+                $"{variableName}_msg",
+                RuntimeValue.FromString(text)));
+        };
+
+        arqExec.OnFechado += exitCode =>
+        {
+            _specialTypes.EnqueueEvent(new PendingScriptEvent(
+                owner,
+                $"{variableName}_fechou",
+                RuntimeValue.FromInt(exitCode)));
+        };
     }
 
     /// <summary>
@@ -219,7 +345,9 @@ public sealed class IntMudRuntime : IDisposable
         {
             // Skip if already tracked
             if (_instances.ContainsKey(obj.ClassName) && _instances[obj.ClassName] == obj)
+            {
                 continue;
+            }
 
             // Add to instances (use class name as key for first object)
             if (!_instances.ContainsKey(obj.ClassName))
@@ -244,7 +372,8 @@ public sealed class IntMudRuntime : IDisposable
     }
 
     /// <summary>
-    /// Start the runtime event loop.
+    /// Start the runtime event loop in a background thread.
+    /// Use RunSync() for interpreter mode where console input needs to run on the main thread.
     /// </summary>
     public void Start()
     {
@@ -264,6 +393,23 @@ public sealed class IntMudRuntime : IDisposable
             IsBackground = true
         };
         _eventLoopThread.Start();
+    }
+
+    /// <summary>
+    /// Run the event loop synchronously on the current thread.
+    /// This is the preferred mode for interpreter/console applications where
+    /// console I/O must happen on the main thread (like original IntMUD).
+    /// </summary>
+    public void RunSync(CancellationToken cancellationToken = default)
+    {
+        if (_running)
+            return;
+
+        _running = true;
+        _cancellationSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        // Run event loop on current thread (synchronous, like original IntMUD)
+        EventLoop();
     }
 
     /// <summary>
@@ -337,6 +483,9 @@ public sealed class IntMudRuntime : IDisposable
                 // Process exec triggers
                 ProcessExecTriggers();
 
+                // Process pending I/O events (socket, serv, arqexec)
+                ProcessPendingEvents();
+
                 // Process console input (non-blocking)
                 ProcessConsoleInput();
 
@@ -376,6 +525,14 @@ public sealed class IntMudRuntime : IDisposable
         }
     }
 
+    private void ProcessPendingEvents()
+    {
+        foreach (var evt in _specialTypes.DrainPendingEvents())
+        {
+            CallEventFunction(evt.Owner, evt.HandlerName, evt.Args);
+        }
+    }
+
     private void ProcessConsoleInput()
     {
         // Check if there's a key available
@@ -386,18 +543,38 @@ public sealed class IntMudRuntime : IDisposable
         // Send to all console instances
         foreach (var console in _consoleInstances)
         {
-            CallEventFunction(console.Owner, $"{console.VariableName}_tecla", RuntimeValue.FromString(key));
+            // First, call _tecla for every key press (for special key handling like ESC)
+            var teclaFunc = $"{console.VariableName}_tecla";
+            CallEventFunction(console.Owner, teclaFunc, RuntimeValue.FromString(key));
+
+            // Get the TelaTxtInstance from the object to accumulate text
+            var telaValue = console.Owner.GetField(console.VariableName);
+            if (telaValue.AsObject() is TelaTxtInstance tela)
+            {
+                // Process the key and check if ENTER was pressed
+                var lineText = tela.ProcessKey(key);
+                if (lineText != null)
+                {
+                    // ENTER was pressed - call _msg with the accumulated text
+                    var msgFunc = $"{console.VariableName}_msg";
+                    CallEventFunction(console.Owner, msgFunc, RuntimeValue.FromString(lineText));
+                }
+            }
         }
     }
 
     private void CallEventFunction(BytecodeRuntimeObject owner, string functionName, params RuntimeValue[] args)
     {
         if (!_interpreters.TryGetValue(owner, out var interpreter))
+        {
             return;
+        }
 
         var (func, definingUnit) = owner.GetMethodWithUnit(functionName);
         if (func == null || definingUnit == null)
+        {
             return;
+        }
 
         try
         {

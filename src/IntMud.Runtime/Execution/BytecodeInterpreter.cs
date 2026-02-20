@@ -1,3 +1,4 @@
+using IntMud.Runtime.Types;
 using IntMud.Runtime.Values;
 using BytecodeCompiledUnit = IntMud.Compiler.Bytecode.CompiledUnit;
 using BytecodeCompiledFunction = IntMud.Compiler.Bytecode.CompiledFunction;
@@ -30,6 +31,19 @@ public static class GlobalObjectRegistry
             }
             if (!list.Contains(obj))
             {
+                // Maintain doubly linked list: append at end
+                if (list.Count > 0)
+                {
+                    var last = list[list.Count - 1];
+                    last.NextObject = obj;
+                    obj.PreviousObject = last;
+                    obj.NextObject = null;
+                }
+                else
+                {
+                    obj.PreviousObject = null;
+                    obj.NextObject = null;
+                }
                 list.Add(obj);
             }
         }
@@ -45,6 +59,14 @@ public static class GlobalObjectRegistry
         {
             if (_objectsByClass.TryGetValue(obj.ClassName, out var list))
             {
+                // Fix doubly linked list before removing
+                var prev = obj.PreviousObject;
+                var next = obj.NextObject;
+                if (prev != null) prev.NextObject = next;
+                if (next != null) next.PreviousObject = prev;
+                obj.PreviousObject = null;
+                obj.NextObject = null;
+
                 list.Remove(obj);
             }
         }
@@ -688,6 +710,11 @@ public sealed class BytecodeInterpreter
                         ReadUInt16(bytecode);
                         break;
 
+                    case BytecodeOp.InitSpecialType:
+                        var specialTypeName = stringPool[ReadUInt16(bytecode)];
+                        Push(CreateSpecialTypeInstance(specialTypeName));
+                        break;
+
                     default:
                         throw new RuntimeException($"Unknown opcode: {op}");
                 }
@@ -748,6 +775,15 @@ public sealed class BytecodeInterpreter
 
     private RuntimeValue LoadField(RuntimeValue obj, string fieldName)
     {
+        // Handle special type property access
+        if (obj.Type == RuntimeValueType.Object)
+        {
+            var instance = obj.AsObject();
+            var result = GetSpecialTypeProperty(instance, fieldName);
+            if (result.HasValue)
+                return result.Value;
+        }
+
         // Handle BytecodeRuntimeObject
         if (obj.Type == RuntimeValueType.Object && obj.AsObject() is BytecodeRuntimeObject runtimeObj)
         {
@@ -788,11 +824,310 @@ public sealed class BytecodeInterpreter
         };
     }
 
+    /// <summary>
+    /// Get property from a special type instance.
+    /// Returns null if not a special type or property not found.
+    /// </summary>
+    private RuntimeValue? GetSpecialTypeProperty(object? instance, string propertyName)
+    {
+        var lowerProp = propertyName.ToLowerInvariant();
+
+        switch (instance)
+        {
+            case TelaTxtInstance telaTxt:
+                return GetTelaTxtProperty(telaTxt, propertyName);
+
+            case TextoTxtInstance textoTxt:
+                switch (lowerProp)
+                {
+                    case "linhas":
+                        return RuntimeValue.FromInt(textoTxt.Linhas);
+                    case "bytes":
+                        return RuntimeValue.FromInt(textoTxt.Bytes);
+                    case "ini":
+                        return RuntimeValue.FromObject(textoTxt.Ini());
+                    case "fim":
+                        return RuntimeValue.FromObject(textoTxt.Fim());
+                    // Methods that can be called without parentheses
+                    case "limpar":
+                        textoTxt.Limpar();
+                        return RuntimeValue.Null;
+                    case "rand":
+                        textoTxt.Rand();
+                        return RuntimeValue.Null;
+                    case "ordena":
+                        textoTxt.Ordena();
+                        return RuntimeValue.Null;
+                    default:
+                        return null;
+                }
+
+            case TextoPosInstance textoPos:
+                // Handle method-like properties (called without parentheses in IntMUD)
+                switch (lowerProp)
+                {
+                    case "lin":
+                        return RuntimeValue.FromInt(textoPos.Lin);
+                    case "linha":
+                        return RuntimeValue.FromInt(textoPos.Linha);
+                    case "byte":
+                        return RuntimeValue.FromInt(textoPos.Byte);
+                    case "texto":
+                        return RuntimeValue.FromString(textoPos.Texto());
+                    case "depois":
+                        // depois - Move to next line (method called as property)
+                        textoPos.Depois();
+                        return textoPos.Lin > 0 ? RuntimeValue.FromObject(textoPos) : RuntimeValue.Null;
+                    case "antes":
+                        // antes - Move to previous line (method called as property)
+                        textoPos.Antes();
+                        return textoPos.Lin > 0 ? RuntimeValue.FromObject(textoPos) : RuntimeValue.Null;
+                    case "remove":
+                        // remove - Remove current line (method called as property)
+                        textoPos.Remove();
+                        return RuntimeValue.Null;
+                    case "juntar":
+                        // juntar - Join with next line (method called as property)
+                        textoPos.Juntar();
+                        return RuntimeValue.Null;
+                    default:
+                        return null;
+                }
+
+            case ListaObjInstance listaObj:
+                return lowerProp switch
+                {
+                    "total" => RuntimeValue.FromInt(listaObj.Total),
+                    "ini" => listaObj.Ini() is { } ini ? RuntimeValue.FromObject(ini) : RuntimeValue.Null,
+                    "fim" => listaObj.Fim() is { } fim ? RuntimeValue.FromObject(fim) : RuntimeValue.Null,
+                    "objini" => listaObj.ObjIni is { } objIni ? RuntimeValue.FromObject(objIni) : RuntimeValue.Null,
+                    "objfim" => listaObj.ObjFim is { } objFim ? RuntimeValue.FromObject(objFim) : RuntimeValue.Null,
+                    _ => null,
+                };
+
+            case ListaItemInstance listaItem:
+                switch (lowerProp)
+                {
+                    case "total":
+                        return RuntimeValue.FromInt(listaItem.Total);
+                    case "obj":
+                        return listaItem.Obj is { } obj ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+                    case "objlista":
+                        return listaItem.ObjLista is { } lista ? RuntimeValue.FromObject(lista) : RuntimeValue.Null;
+                    case "objantes":
+                        return listaItem.ObjAntes is { } antes ? RuntimeValue.FromObject(antes) : RuntimeValue.Null;
+                    case "objdepois":
+                        return listaItem.ObjDepois is { } depois ? RuntimeValue.FromObject(depois) : RuntimeValue.Null;
+                    case "depois":
+                        // depois - Move to next item (method called as property, matching C++ FuncDepois)
+                        listaItem.Depois();
+                        return listaItem.IsValid ? RuntimeValue.FromObject(listaItem) : RuntimeValue.Null;
+                    case "antes":
+                        // antes - Move to previous item (method called as property, matching C++ FuncAntes)
+                        listaItem.Antes();
+                        return listaItem.IsValid ? RuntimeValue.FromObject(listaItem) : RuntimeValue.Null;
+                    case "remove":
+                        // remove - Remove current item (method called as property)
+                        listaItem.Remove();
+                        return RuntimeValue.Null;
+                    default:
+                        return null;
+                }
+
+            case IndiceObjInstance indiceObj:
+                return lowerProp switch
+                {
+                    "nome" => RuntimeValue.FromString(indiceObj.Nome),
+                    _ => null
+                };
+
+            case IndiceItemInstance indiceItem:
+                return lowerProp switch
+                {
+                    "txt" => RuntimeValue.FromString(indiceItem.Txt),
+                    "obj" => indiceItem.Obj is { } obj ? RuntimeValue.FromObject(obj) : RuntimeValue.Null,
+                    _ => null
+                };
+
+            case IntTempoInstance intTempo:
+                return lowerProp switch
+                {
+                    "valor" or "" => RuntimeValue.FromInt(intTempo.Valor),
+                    "abs" => RuntimeValue.FromInt(intTempo.Abs),
+                    "pos" => RuntimeValue.FromInt(intTempo.Pos),
+                    "neg" => RuntimeValue.FromInt(intTempo.Neg),
+                    _ => null
+                };
+
+            case IntExecInstance intExec:
+                return lowerProp switch
+                {
+                    "valor" or "" => RuntimeValue.FromInt(intExec.Valor),
+                    _ => null
+                };
+
+            case IntIncInstance intInc:
+                return lowerProp switch
+                {
+                    "valor" or "" => RuntimeValue.FromInt(intInc.Valor),
+                    _ => null
+                };
+
+            case DataHoraInstance dataHora:
+                return lowerProp switch
+                {
+                    "ano" => RuntimeValue.FromInt(dataHora.Ano),
+                    "mes" => RuntimeValue.FromInt(dataHora.Mes),
+                    "dia" => RuntimeValue.FromInt(dataHora.Dia),
+                    "hora" => RuntimeValue.FromInt(dataHora.Hora),
+                    "min" => RuntimeValue.FromInt(dataHora.Min),
+                    "seg" => RuntimeValue.FromInt(dataHora.Seg),
+                    "diasem" => RuntimeValue.FromInt(dataHora.DiaSem),
+                    "numdias" => RuntimeValue.FromInt(dataHora.NumDias),
+                    "numseg" => RuntimeValue.FromInt(dataHora.NumSeg),
+                    "numtotal" => RuntimeValue.FromDouble(dataHora.NumTotal),
+                    "bissexto" => RuntimeValue.FromBool(dataHora.Bissexto),
+                    _ => null
+                };
+
+            case DebugInstance debug:
+                return lowerProp switch
+                {
+                    "exec" => RuntimeValue.FromInt(debug.Exec),
+                    "err" => RuntimeValue.FromInt(debug.Err),
+                    "log" => RuntimeValue.FromInt(debug.Log),
+                    "utempo" => RuntimeValue.FromDouble(debug.Utempo()),
+                    "stempo" => RuntimeValue.FromDouble(debug.Stempo()),
+                    "mem" => RuntimeValue.FromDouble(debug.Mem()),
+                    "memmax" => RuntimeValue.FromDouble(debug.MemMax()),
+                    "func" => RuntimeValue.FromInt(_callStack.Count),
+                    _ => null
+                };
+
+            case ArqTxtInstance arqTxt:
+                return lowerProp switch
+                {
+                    "valido" => RuntimeValue.FromBool(arqTxt.Valido),
+                    "eof" => RuntimeValue.FromBool(arqTxt.Eof),
+                    "pos" => RuntimeValue.FromInt(arqTxt.Pos),
+                    _ => null
+                };
+
+            case TextoVarInstance textoVar:
+                return lowerProp switch
+                {
+                    "total" => RuntimeValue.FromInt(textoVar.Total),
+                    "ini" => RuntimeValue.FromString(textoVar.Ini()),
+                    "fim" => RuntimeValue.FromString(textoVar.Fim()),
+                    _ => null
+                };
+
+            case TextoObjInstance textoObj:
+                return lowerProp switch
+                {
+                    "total" => RuntimeValue.FromInt(textoObj.Total),
+                    "ini" => RuntimeValue.FromString(textoObj.Ini()),
+                    "fim" => RuntimeValue.FromString(textoObj.Fim()),
+                    _ => null
+                };
+
+            case NomeObjInstance nomeObj:
+                return lowerProp switch
+                {
+                    "nome" => RuntimeValue.FromString(nomeObj.Nome()),
+                    _ => null
+                };
+
+            case ArqDirInstance arqDir:
+                return lowerProp switch
+                {
+                    "lin" => RuntimeValue.FromBool(arqDir.Lin),
+                    "texto" => RuntimeValue.FromString(arqDir.Texto()),
+                    _ => null
+                };
+
+            case ArqLogInstance arqLog:
+                return lowerProp switch
+                {
+                    "valido" => RuntimeValue.FromBool(arqLog.Valido),
+                    _ => null
+                };
+
+            case ArqMemInstance arqMem:
+                return lowerProp switch
+                {
+                    "tamanho" => RuntimeValue.FromInt(arqMem.Tamanho),
+                    "pos" => RuntimeValue.FromInt(arqMem.Pos),
+                    "eof" => RuntimeValue.FromBool(arqMem.Eof),
+                    _ => null
+                };
+
+            case ArqExecInstance arqExec:
+                return lowerProp switch
+                {
+                    "valido" => RuntimeValue.FromBool(arqExec.Valido),
+                    _ => null
+                };
+
+            case ArqProgInstance arqProg:
+                return lowerProp switch
+                {
+                    "lin" => RuntimeValue.FromBool(arqProg.Lin),
+                    "texto" => RuntimeValue.FromString(arqProg.Texto()),
+                    _ => null
+                };
+
+            case ProgInstance prog:
+                return lowerProp switch
+                {
+                    "arquivo" => RuntimeValue.FromString(prog.Arquivo()),
+                    "arqnome" => RuntimeValue.FromString(prog.ArqNome()),
+                    "classe" => RuntimeValue.FromString(prog.Classe()),
+                    "nivel" => RuntimeValue.FromInt(prog.Nivel()),
+                    _ => null
+                };
+
+            case ServInstance serv:
+                return lowerProp switch
+                {
+                    "valido" => RuntimeValue.FromBool(serv.Valido),
+                    _ => null
+                };
+
+            case SocketInstance socket:
+                return lowerProp switch
+                {
+                    "valido" => RuntimeValue.FromBool(socket.Valido),
+                    "ip" => RuntimeValue.FromString(socket.Ip),
+                    "iplocal" => RuntimeValue.FromString(socket.IpLocal),
+                    "porta" => RuntimeValue.FromInt(socket.Porta),
+                    "proto" => RuntimeValue.FromInt(socket.Proto),
+                    "aflooder" => RuntimeValue.FromInt(socket.AFlooder),
+                    "cores" => RuntimeValue.FromInt(socket.Cores),
+                    _ => null
+                };
+
+            default:
+                return null;
+        }
+    }
+
     private void StoreField(RuntimeValue obj, string fieldName, RuntimeValue value)
     {
+        // Handle special type property assignment
+        if (obj.Type == RuntimeValueType.Object)
+        {
+            if (SetSpecialTypeProperty(obj.AsObject(), fieldName, value))
+                return;
+        }
+
         // Handle BytecodeRuntimeObject
         if (obj.Type == RuntimeValueType.Object && obj.AsObject() is BytecodeRuntimeObject runtimeObj)
         {
+            // Apply type truncation/clamping to match C++ behavior
+            var typeName = runtimeObj.GetFieldTypeName(fieldName);
+            if (typeName != null)
+                value = ClampValueForType(value, typeName);
             runtimeObj.SetField(fieldName, value);
             return;
         }
@@ -801,6 +1136,187 @@ public sealed class BytecodeInterpreter
         if (obj.Type == RuntimeValueType.Array && int.TryParse(fieldName, out var index))
         {
             obj.SetIndex(index, value);
+        }
+    }
+
+    /// <summary>
+    /// Clamp/truncate a RuntimeValue to match the declared variable type.
+    /// Matches C++ OperadorAtrib semantics for basic numeric types.
+    /// </summary>
+    private static RuntimeValue ClampValueForType(RuntimeValue value, string typeName)
+    {
+        switch (typeName.ToLowerInvariant())
+        {
+            case "int1":
+            {
+                // C++ stores as a single bit: 0 or 1
+                return RuntimeValue.FromInt(value.IsTruthy ? 1 : 0);
+            }
+            case "int8":
+            {
+                // C++ clamps to [-128, 127]
+                var v = value.AsInt();
+                if (v < -0x80) v = -0x80;
+                else if (v > 0x7F) v = 0x7F;
+                return RuntimeValue.FromInt(v);
+            }
+            case "uint8":
+            {
+                // C++ clamps to [0, 255]
+                var v = value.AsInt();
+                if (v < 0) v = 0;
+                else if (v > 0xFF) v = 0xFF;
+                return RuntimeValue.FromInt(v);
+            }
+            case "int16":
+            {
+                // C++ clamps to [-32768, 32767]
+                var v = value.AsInt();
+                if (v < -0x8000) v = -0x8000;
+                else if (v > 0x7FFF) v = 0x7FFF;
+                return RuntimeValue.FromInt(v);
+            }
+            case "uint16":
+            {
+                // C++ clamps to [0, 65535]
+                var v = value.AsInt();
+                if (v < 0) v = 0;
+                else if (v > 0xFFFF) v = 0xFFFF;
+                return RuntimeValue.FromInt(v);
+            }
+            case "int32":
+            case "int":
+            {
+                // C++ stores as signed 32-bit int
+                var v = value.AsInt();
+                if (v < int.MinValue) v = int.MinValue;
+                else if (v > int.MaxValue) v = int.MaxValue;
+                return RuntimeValue.FromInt(v);
+            }
+            case "uint32":
+            {
+                // C++ clamps double to [0, 4294967295]
+                var v = value.AsDouble();
+                if (v < 0) v = 0;
+                else if (v > 0xFFFFFFFFL) v = 0xFFFFFFFFL;
+                return RuntimeValue.FromInt((long)(uint)v);
+            }
+            case "real":
+            {
+                // C++ uses float (32-bit); truncate double to float precision
+                var v = (float)value.AsDouble();
+                return RuntimeValue.FromDouble(v);
+            }
+            // "real2" or "real64" uses double natively - no truncation needed
+            default:
+                return value;
+        }
+    }
+
+    /// <summary>
+    /// Set property on a special type instance.
+    /// Returns true if handled, false otherwise.
+    /// </summary>
+    private bool SetSpecialTypeProperty(object? instance, string propertyName, RuntimeValue value)
+    {
+        var lowerProp = propertyName.ToLowerInvariant();
+
+        switch (instance)
+        {
+            case TelaTxtInstance telaTxt:
+                SetTelaTxtProperty(telaTxt, propertyName, value);
+                return true;
+
+            case TextoPosInstance textoPos:
+                switch (lowerProp)
+                {
+                    case "linha":
+                        textoPos.Linha = (int)value.AsInt();
+                        return true;
+                }
+                return false;
+
+            case IndiceObjInstance indiceObj:
+                switch (lowerProp)
+                {
+                    case "nome":
+                        indiceObj.Nome = value.AsString();
+                        return true;
+                }
+                return false;
+
+            case IntTempoInstance intTempo:
+                switch (lowerProp)
+                {
+                    case "valor":
+                    case "":
+                        intTempo.Valor = (int)value.AsInt();
+                        return true;
+                }
+                return false;
+
+            case IntExecInstance intExec:
+                switch (lowerProp)
+                {
+                    case "valor":
+                    case "":
+                        intExec.Valor = (int)value.AsInt();
+                        return true;
+                }
+                return false;
+
+            case IntIncInstance intInc:
+                switch (lowerProp)
+                {
+                    case "valor":
+                    case "":
+                        intInc.Valor = (int)value.AsInt();
+                        return true;
+                }
+                return false;
+
+            case DataHoraInstance dataHora:
+                switch (lowerProp)
+                {
+                    case "ano": dataHora.Ano = (int)value.AsInt(); return true;
+                    case "mes": dataHora.Mes = (int)value.AsInt(); return true;
+                    case "dia": dataHora.Dia = (int)value.AsInt(); return true;
+                    case "hora": dataHora.Hora = (int)value.AsInt(); return true;
+                    case "min": dataHora.Min = (int)value.AsInt(); return true;
+                    case "seg": dataHora.Seg = (int)value.AsInt(); return true;
+                    case "numdias": dataHora.SetNumDias((int)value.AsInt()); return true;
+                    case "numseg": dataHora.SetNumSeg((int)value.AsInt()); return true;
+                    case "numtotal": dataHora.SetNumTotal(value.AsDouble()); return true;
+                }
+                return false;
+
+            case DebugInstance debug:
+                switch (lowerProp)
+                {
+                    case "exec": debug.Exec = (int)value.AsInt(); return true;
+                    case "err": debug.Err = (int)value.AsInt(); return true;
+                    case "log": debug.Log = (int)value.AsInt(); return true;
+                }
+                return false;
+
+            case SocketInstance socket:
+                switch (lowerProp)
+                {
+                    case "proto": socket.Proto = (int)value.AsInt(); return true;
+                    case "aflooder": socket.AFlooder = (int)value.AsInt(); return true;
+                    case "cores": socket.Cores = (int)value.AsInt(); return true;
+                }
+                return false;
+
+            case ArqMemInstance arqMem:
+                switch (lowerProp)
+                {
+                    case "pos": arqMem.Pos = (int)value.AsInt(); return true;
+                }
+                return false;
+
+            default:
+                return false;
         }
     }
 
@@ -916,20 +1432,57 @@ public sealed class BytecodeInterpreter
             args[i] = Pop();
         }
 
-        // Try to find function in current unit
+        // Get current frame for 'this' context
+        var currentFrame = _callStack.Count > 0 ? _callStack.Peek() : default;
+        var thisObj = currentFrame.ThisObject;
+
+        // Try to find function in current object's class (including inherited)
+        if (thisObj != null)
+        {
+            var (method, definingUnit) = thisObj.GetMethodWithUnit(funcName);
+            if (method != null && definingUnit != null)
+            {
+                var result = ExecuteFunctionWithThis(method, thisObj, definingUnit, args);
+                Push(result);
+                return;
+            }
+
+            // Try to find expression constant in current object's class (including inherited)
+            // This handles cases like: const msg = _tela.msg(arg0)
+            // When called as msg("text"), it should evaluate the expression with args
+            var (constant, constantUnit) = thisObj.GetConstantWithUnit(funcName);
+            if (constant != null && constantUnit != null && constant.Type == ConstantType.Expression && constant.ExpressionBytecode != null)
+            {
+                // Use the defining unit's string pool for the expression bytecode
+                var result = ExecuteExpressionConstant(constant, thisObj, constantUnit, args);
+                Push(result);
+                return;
+            }
+        }
+
+        // Try to find function in current unit (fallback for static context)
         if (_unit.Functions.TryGetValue(funcName, out var function))
         {
-            // Propagate 'this' reference from current call frame if available
-            var currentFrame = _callStack.Count > 0 ? _callStack.Peek() : default;
             RuntimeValue result;
-            if (currentFrame.ThisObject != null)
+            if (thisObj != null)
             {
-                result = ExecuteFunctionWithThis(function, currentFrame.ThisObject, args);
+                result = ExecuteFunctionWithThis(function, thisObj, args);
             }
             else
             {
                 result = ExecuteFunction(function, args);
             }
+            Push(result);
+            return;
+        }
+
+        // Try to find expression constant in current unit
+        if (_unit.Constants.TryGetValue(funcName, out var unitConstant) &&
+            unitConstant.Type == ConstantType.Expression && unitConstant.ExpressionBytecode != null)
+        {
+            var result = thisObj != null
+                ? ExecuteExpressionConstant(unitConstant, thisObj, _unit, args)
+                : EvaluateExpressionBytecode(unitConstant.ExpressionBytecode);
             Push(result);
             return;
         }
@@ -950,6 +1503,206 @@ public sealed class BytecodeInterpreter
 
         // Pop the object
         var obj = Pop();
+
+        // Handle TelaTxtInstance method calls (telatxt special type)
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is TelaTxtInstance telaTxt)
+        {
+            var result = CallTelaTxtMethod(telaTxt, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle TextoTxtInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is TextoTxtInstance textoTxt)
+        {
+            var result = CallTextoTxtMethod(textoTxt, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle TextoPosInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is TextoPosInstance textoPos)
+        {
+            var result = CallTextoPosMethod(textoPos, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ListaObjInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ListaObjInstance listaObj)
+        {
+            var result = CallListaObjMethod(listaObj, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ListaItemInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ListaItemInstance listaItem)
+        {
+            var result = CallListaItemMethod(listaItem, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle IndiceObjInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is IndiceObjInstance indiceObj)
+        {
+            var result = CallIndiceObjMethod(indiceObj, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle IndiceItemInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is IndiceItemInstance indiceItem)
+        {
+            var result = CallIndiceItemMethod(indiceItem, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle DataHoraInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is DataHoraInstance dataHora)
+        {
+            var result = CallDataHoraMethod(dataHora, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqTxtInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqTxtInstance arqTxt)
+        {
+            var result = CallArqTxtMethod(arqTxt, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqSavInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqSavInstance arqSav)
+        {
+            var result = CallArqSavMethod(arqSav, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ServInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ServInstance serv)
+        {
+            var result = CallServMethod(serv, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle SocketInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is SocketInstance socket)
+        {
+            var result = CallSocketMethod(socket, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle TextoVarInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is TextoVarInstance textoVar)
+        {
+            var result = CallTextoVarMethod(textoVar, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle TextoObjInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is TextoObjInstance textoObj)
+        {
+            var result = CallTextoObjMethod(textoObj, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle NomeObjInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is NomeObjInstance nomeObj)
+        {
+            var result = CallNomeObjMethod(nomeObj, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqDirInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqDirInstance arqDir)
+        {
+            var result = CallArqDirMethod(arqDir, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqLogInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqLogInstance arqLog)
+        {
+            var result = CallArqLogMethod(arqLog, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqMemInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqMemInstance arqMem)
+        {
+            var result = CallArqMemMethod(arqMem, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqExecInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqExecInstance arqExec)
+        {
+            var result = CallArqExecMethod(arqExec, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ArqProgInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ArqProgInstance arqProg)
+        {
+            var result = CallArqProgMethod(arqProg, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle ProgInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is ProgInstance prog)
+        {
+            var result = CallProgMethod(prog, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle DebugInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is DebugInstance debug)
+        {
+            var result = CallDebugMethod(debug, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle IntTempoInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is IntTempoInstance intTempo)
+        {
+            var result = CallIntTempoMethod(intTempo, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle IntExecInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is IntExecInstance intExec)
+        {
+            var result = CallIntExecMethod(intExec, methodName, args);
+            Push(result);
+            return;
+        }
+
+        // Handle IntIncInstance method calls
+        if (obj.Type == RuntimeValueType.Object && obj.AsObject() is IntIncInstance intInc2)
+        {
+            var result = CallIntIncMethod(intInc2, methodName, args);
+            Push(result);
+            return;
+        }
 
         // Handle BytecodeRuntimeObject method calls with virtual dispatch
         if (obj.Type == RuntimeValueType.Object && obj.AsObject() is BytecodeRuntimeObject runtimeObj)
@@ -973,8 +1726,1451 @@ public sealed class BytecodeInterpreter
             return;
         }
 
+        // Handle ClassReference - static method calls (classe:função with no object)
+        // In IntMUD C++, static calls execute with this=null
+        if (obj.Type == RuntimeValueType.ClassReference && obj.AsObject() is BytecodeCompiledUnit classUnit)
+        {
+            // Find the function in the class
+            if (classUnit.Functions.TryGetValue(methodName, out var function))
+            {
+                // Execute the function with a null 'this' object
+                // We need to create a temporary context without a valid 'this'
+                var result = ExecuteStaticMethodCall(function, classUnit, args);
+                Push(result);
+                return;
+            }
+        }
+
         // Method not found
         Push(RuntimeValue.Null);
+    }
+
+    /// <summary>
+    /// Call a method on a TelaTxtInstance (telatxt special type).
+    /// </summary>
+    private RuntimeValue CallTelaTxtMethod(TelaTxtInstance telaTxt, string methodName, RuntimeValue[] args)
+    {
+        // Connect telaTxt output to our WriteOutput delegate
+        telaTxt.WriteOutput ??= WriteOutput;
+
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "msg":
+                // msg(text...) - Write messages to console
+                var sb = new System.Text.StringBuilder();
+                foreach (var arg in args)
+                {
+                    sb.Append(arg.AsString());
+                }
+                telaTxt.Msg(sb.ToString());
+                return RuntimeValue.Null;
+
+            case "limpa":
+                // limpa - Clear the screen
+                telaTxt.Limpa();
+                return RuntimeValue.Null;
+
+            case "bipe":
+                // bipe - Emit a beep sound
+                telaTxt.EmitBipe();
+                return RuntimeValue.Null;
+
+            case "proto":
+                // proto - Get protocol (1 if active, 0 if not)
+                return RuntimeValue.FromInt(telaTxt.Proto);
+
+            case "posx":
+                // posx - Get current column position
+                return RuntimeValue.FromInt(telaTxt.PosX);
+
+            case "texto":
+                // texto - Get/set the input text
+                if (args.Length > 0)
+                {
+                    telaTxt.Texto = args[0].AsString();
+                }
+                return RuntimeValue.FromString(telaTxt.Texto);
+
+            case "total":
+                // total - Get/set maximum input line length
+                if (args.Length > 0)
+                {
+                    telaTxt.Total = (int)args[0].AsInt();
+                }
+                return RuntimeValue.FromInt(telaTxt.Total);
+
+            case "linha":
+                // linha - Get/set current line position
+                if (args.Length > 0)
+                {
+                    telaTxt.Linha = (int)args[0].AsInt();
+                }
+                return RuntimeValue.FromInt(telaTxt.Linha);
+
+            case "tecla":
+                // tecla(key) - Simulate a key press
+                if (args.Length > 0)
+                {
+                    telaTxt.ProcessKey(args[0].AsString());
+                }
+                return RuntimeValue.Null;
+
+            default:
+                // Unknown method
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a TextoTxtInstance.
+    /// </summary>
+    private RuntimeValue CallTextoTxtMethod(TextoTxtInstance textoTxt, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "addfim":
+                // addfim(text) - Add line at end
+                if (args.Length > 0)
+                    textoTxt.AddFim(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "addini":
+                // addini(text) - Add line at beginning
+                if (args.Length > 0)
+                    textoTxt.AddIni(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "limpar":
+                // limpar() - Clear all lines
+                textoTxt.Limpar();
+                return RuntimeValue.Null;
+
+            case "ler":
+                // ler(filename) - Read from file
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(textoTxt.Ler(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "salvar":
+                // salvar(filename) - Save to file
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(textoTxt.Salvar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "rand":
+                // rand() - Shuffle lines randomly
+                textoTxt.Rand();
+                return RuntimeValue.Null;
+
+            case "ordena":
+                // ordena() - Sort lines
+                textoTxt.Ordena();
+                return RuntimeValue.Null;
+
+            case "ini":
+                // ini() - Get first position
+                return RuntimeValue.FromObject(textoTxt.Ini());
+
+            case "fim":
+                // fim() - Get last position
+                return RuntimeValue.FromObject(textoTxt.Fim());
+
+            case "getline":
+                // getline(index) - Get line at index
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(textoTxt.GetLine((int)args[0].AsInt()));
+                return RuntimeValue.FromString("");
+
+            case "setline":
+                // setline(index, text) - Set line at index
+                if (args.Length > 1)
+                    textoTxt.SetLine((int)args[0].AsInt(), args[1].AsString());
+                return RuntimeValue.Null;
+
+            case "removeline":
+                // removeline(index) - Remove line at index
+                if (args.Length > 0)
+                    textoTxt.RemoveLine((int)args[0].AsInt());
+                return RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a TextoPosInstance.
+    /// </summary>
+    private RuntimeValue CallTextoPosMethod(TextoPosInstance textoPos, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "depois":
+                // depois() - Move to next line
+                textoPos.Depois();
+                // Return the position if still valid
+                return textoPos.Lin > 0 ? RuntimeValue.FromObject(textoPos) : RuntimeValue.Null;
+
+            case "antes":
+                // antes() - Move to previous line
+                textoPos.Antes();
+                // Return the position if still valid
+                return textoPos.Lin > 0 ? RuntimeValue.FromObject(textoPos) : RuntimeValue.Null;
+
+            case "texto":
+                // texto(start, len) - Get substring
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(textoPos.Texto((int)args[0].AsInt(), (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromString(textoPos.Texto((int)args[0].AsInt()));
+                return RuntimeValue.FromString(textoPos.Texto());
+
+            case "textolin":
+                // textolin(maxLen) - Get line text limited
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(textoPos.TextoLin((int)args[0].AsInt()));
+                return RuntimeValue.FromString(textoPos.Texto());
+
+            case "mudar":
+                // mudar(text, start, len) - Replace text
+                if (args.Length >= 3)
+                    textoPos.Mudar(args[0].AsString(), (int)args[1].AsInt(), (int)args[2].AsInt());
+                else if (args.Length >= 1)
+                    textoPos.Mudar(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "add":
+                // add(text) - Add text line before current position
+                // add(source, count) - Add lines from source position
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Object &&
+                    args[0].AsObject() is TextoPosInstance sourcePos)
+                {
+                    return RuntimeValue.FromInt(textoPos.Add(sourcePos, (int)args[1].AsInt()));
+                }
+                if (args.Length >= 1)
+                {
+                    return RuntimeValue.FromInt(textoPos.Add(args[0].AsString()));
+                }
+                return RuntimeValue.FromInt(0);
+
+            case "addpos":
+                // addpos(text) - Add text line and move position past it
+                // addpos(source, count) - Add lines and move position past them
+                if (args.Length >= 2 && args[0].Type == RuntimeValueType.Object &&
+                    args[0].AsObject() is TextoPosInstance sourcePosForAddPos)
+                    return RuntimeValue.FromInt(textoPos.AddPos(sourcePosForAddPos, (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromInt(textoPos.AddPos(args[0].AsString()));
+                return RuntimeValue.FromInt(0);
+
+            case "remove":
+                // remove() - Remove current line
+                textoPos.Remove();
+                return RuntimeValue.Null;
+
+            case "juntar":
+                // juntar() - Join current line with PREVIOUS line
+                return RuntimeValue.FromBool(textoPos.Juntar());
+
+            case "txtproc":
+                // txtproc(search, [startChar], [numLines]) - Search for text (case sensitive)
+                if (args.Length >= 3)
+                    return RuntimeValue.FromInt(textoPos.TxtProc(args[0].AsString(), (int)args[1].AsInt(), (int)args[2].AsInt()));
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(textoPos.TxtProc(args[0].AsString(), (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromInt(textoPos.TxtProc(args[0].AsString()));
+                return RuntimeValue.FromInt(-1);
+
+            case "txtprocmai":
+                // txtprocmai(search, [startChar], [numLines]) - Search for text (case insensitive)
+                if (args.Length >= 3)
+                    return RuntimeValue.FromInt(textoPos.TxtProcMai(args[0].AsString(), (int)args[1].AsInt(), (int)args[2].AsInt()));
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(textoPos.TxtProcMai(args[0].AsString(), (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromInt(textoPos.TxtProcMai(args[0].AsString()));
+                return RuntimeValue.FromInt(-1);
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a ListaObjInstance.
+    /// </summary>
+    private RuntimeValue CallListaObjMethod(ListaObjInstance listaObj, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "addini":
+                // addini(obj, ...) - Add one or more objects at beginning
+                {
+                    ListaItemInstance? lastItem = null;
+                    // Add in reverse order so first arg ends up first
+                    for (int i = args.Length - 1; i >= 0; i--)
+                    {
+                        if (args[i].Type == RuntimeValueType.Object && args[i].AsObject() is { } addObj)
+                            lastItem = listaObj.AddIni(addObj);
+                    }
+                    return lastItem != null ? RuntimeValue.FromObject(lastItem) : RuntimeValue.Null;
+                }
+
+            case "addfim":
+                // addfim(obj, ...) - Add one or more objects at end
+                {
+                    ListaItemInstance? lastItem = null;
+                    foreach (var arg in args)
+                    {
+                        if (arg.Type == RuntimeValueType.Object && arg.AsObject() is { } addObj)
+                            lastItem = listaObj.AddFim(addObj);
+                    }
+                    return lastItem != null ? RuntimeValue.FromObject(lastItem) : RuntimeValue.Null;
+                }
+
+            case "addini1":
+                // addini1(obj) - Add at beginning if not present, returns ListaItem or null
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var item = listaObj.AddIni1(args[0].AsObject()!);
+                    return item != null ? RuntimeValue.FromObject(item) : RuntimeValue.Null;
+                }
+                return RuntimeValue.Null;
+
+            case "addfim1":
+                // addfim1(obj) - Add at end if not present, returns ListaItem or null
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var item = listaObj.AddFim1(args[0].AsObject()!);
+                    return item != null ? RuntimeValue.FromObject(item) : RuntimeValue.Null;
+                }
+                return RuntimeValue.Null;
+
+            case "ini":
+                // ini() - Get first item
+                var ini = listaObj.Ini();
+                return ini != null ? RuntimeValue.FromObject(ini) : RuntimeValue.Null;
+
+            case "fim":
+                // fim() - Get last item
+                var fim = listaObj.Fim();
+                return fim != null ? RuntimeValue.FromObject(fim) : RuntimeValue.Null;
+
+            case "limpar":
+                // limpar() - Clear list
+                listaObj.Limpar();
+                return RuntimeValue.Null;
+
+            case "apagar":
+                // apagar() - Clear and delete objects
+                listaObj.Apagar();
+                return RuntimeValue.Null;
+
+            case "possui":
+                // possui(obj) - Check if contains
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var objToCheck = args[0].AsObject();
+                    return RuntimeValue.FromBool(objToCheck != null && listaObj.Possui(objToCheck));
+                }
+                return RuntimeValue.FromBool(false);
+
+            case "rand":
+                // rand() - Shuffle list randomly
+                listaObj.Rand();
+                return RuntimeValue.Null;
+
+            case "inverter":
+                // inverter() - Reverse list
+                listaObj.Inverter();
+                return RuntimeValue.Null;
+
+            case "remove":
+                // remove(obj, ...) - Remove one or more objects; no args = remove duplicates
+                if (args.Length > 0)
+                {
+                    int totalRemoved = 0;
+                    foreach (var arg in args)
+                    {
+                        if (arg.Type == RuntimeValueType.Object && arg.AsObject() is { } objToRemove)
+                            totalRemoved += listaObj.Remove(objToRemove);
+                    }
+                    return RuntimeValue.FromInt(totalRemoved);
+                }
+                else
+                {
+                    // No args: remove duplicate objects from list
+                    listaObj.RemoveDuplicates();
+                    return RuntimeValue.Null;
+                }
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a ListaItemInstance.
+    /// </summary>
+    private RuntimeValue CallListaItemMethod(ListaItemInstance listaItem, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "depois":
+                // depois(count) - Mutate this item to advance forward (C++ FuncDepois behavior)
+                {
+                    int depoisCount = args.Length > 0 ? (int)args[0].AsInt() : 1;
+                    listaItem.Depois(depoisCount);
+                    return listaItem.IsValid ? RuntimeValue.FromObject(listaItem) : RuntimeValue.Null;
+                }
+
+            case "antes":
+                // antes(count) - Mutate this item to move backward (C++ FuncAntes behavior)
+                {
+                    int antesCount = args.Length > 0 ? (int)args[0].AsInt() : 1;
+                    listaItem.Antes(antesCount);
+                    return listaItem.IsValid ? RuntimeValue.FromObject(listaItem) : RuntimeValue.Null;
+                }
+
+            case "remove":
+                // remove() - Remove this item
+                listaItem.Remove();
+                return RuntimeValue.Null;
+
+            case "addantes":
+                // addantes(obj) - Add before this item
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var objToAdd = args[0].AsObject();
+                    if (objToAdd != null)
+                        listaItem.AddAntes(objToAdd);
+                }
+                return RuntimeValue.Null;
+
+            case "adddepois":
+                // adddepois(obj) - Add after this item
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
+                {
+                    var objToAdd = args[0].AsObject();
+                    if (objToAdd != null)
+                        listaItem.AddDepois(objToAdd);
+                }
+                return RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an IndiceObjInstance.
+    /// </summary>
+    private RuntimeValue CallIndiceObjMethod(IndiceObjInstance indiceObj, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "obj":
+                // obj(name) - Get object by name
+                if (args.Length > 0)
+                {
+                    var obj = IndiceObjInstance.Obj(args[0].AsString());
+                    return obj != null ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+                }
+                return RuntimeValue.Null;
+
+            case "ini":
+                // ini() - Get first object in index (alphabetically)
+                var iniObj = IndiceObjInstance.Ini();
+                return iniObj != null ? RuntimeValue.FromObject(iniObj) : RuntimeValue.Null;
+
+            case "fim":
+                // fim() - Get last object in index (alphabetically)
+                var fimObj = IndiceObjInstance.Fim();
+                return fimObj != null ? RuntimeValue.FromObject(fimObj) : RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an IndiceItemInstance.
+    /// </summary>
+    private RuntimeValue CallIndiceItemMethod(IndiceItemInstance indiceItem, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "antes":
+                // antes() - Move to previous item (navigation)
+                indiceItem.Antes();
+                // Return the item's current object after moving
+                return indiceItem.Obj != null ? RuntimeValue.FromObject(indiceItem.Obj) : RuntimeValue.Null;
+
+            case "depois":
+                // depois() - Move to next item (navigation)
+                indiceItem.Depois();
+                // Return the item's current object after moving
+                return indiceItem.Obj != null ? RuntimeValue.FromObject(indiceItem.Obj) : RuntimeValue.Null;
+
+            case "ini":
+                // ini() - Move to first item
+                var iniObj = indiceItem.Ini();
+                return iniObj != null ? RuntimeValue.FromObject(iniObj) : RuntimeValue.Null;
+
+            case "fim":
+                // fim() - Move to last item
+                var fimObj = indiceItem.Fim();
+                return fimObj != null ? RuntimeValue.FromObject(fimObj) : RuntimeValue.Null;
+
+            case "obj":
+                // obj(name) - Look up object by name
+                if (args.Length > 0)
+                {
+                    var obj = indiceItem.LookupObj(args[0].AsString());
+                    return obj != null ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+                }
+                return RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a DataHoraInstance.
+    /// </summary>
+    private RuntimeValue CallDataHoraMethod(DataHoraInstance dataHora, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "agora":
+                dataHora.Agora();
+                return RuntimeValue.Null;
+
+            case "novadata":
+                if (args.Length >= 1) dataHora.Ano = (int)args[0].AsInt();
+                if (args.Length >= 2) dataHora.Mes = (int)args[1].AsInt();
+                if (args.Length >= 3) dataHora.Dia = (int)args[2].AsInt();
+                return RuntimeValue.Null;
+
+            case "novahora":
+                if (args.Length >= 1) dataHora.Hora = (int)args[0].AsInt();
+                if (args.Length >= 2) dataHora.Min = (int)args[1].AsInt();
+                if (args.Length >= 3) dataHora.Seg = (int)args[2].AsInt();
+                return RuntimeValue.Null;
+
+            case "antes":
+                dataHora.Antes();
+                return RuntimeValue.Null;
+
+            case "depois":
+                dataHora.Depois();
+                return RuntimeValue.Null;
+
+            // These are properties but C++ also exposes them as methods (setting numfunc)
+            case "ano": return RuntimeValue.FromInt(dataHora.Ano);
+            case "mes": return RuntimeValue.FromInt(dataHora.Mes);
+            case "dia": return RuntimeValue.FromInt(dataHora.Dia);
+            case "hora": return RuntimeValue.FromInt(dataHora.Hora);
+            case "min": return RuntimeValue.FromInt(dataHora.Min);
+            case "seg": return RuntimeValue.FromInt(dataHora.Seg);
+            case "diasem": return RuntimeValue.FromInt(dataHora.DiaSem);
+            case "bissexto": return RuntimeValue.FromInt(dataHora.Bissexto ? 1 : 0);
+            case "numdias": return RuntimeValue.FromInt(dataHora.NumDias);
+            case "numseg": return RuntimeValue.FromInt(dataHora.NumSeg);
+            case "numtotal": return RuntimeValue.FromDouble(dataHora.NumTotal);
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqTxtInstance.
+    /// </summary>
+    private RuntimeValue CallArqTxtMethod(ArqTxtInstance arqTxt, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "abrir":
+                // abrir(filename, mode) - Open file
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(arqTxt.Abrir(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromBool(arqTxt.Abrir(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "ler":
+                // ler() - Read line
+                return RuntimeValue.FromString(arqTxt.Ler());
+
+            case "escr":
+                // escr(text) - Write line
+                if (args.Length > 0)
+                    arqTxt.Escr(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "escrsem":
+                // escrsem(text) - Write without newline
+                if (args.Length > 0)
+                    arqTxt.EscrSem(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "fechar":
+                // fechar() - Close file
+                arqTxt.Fechar();
+                return RuntimeValue.Null;
+
+            case "flush":
+                // flush() - Flush buffer
+                arqTxt.Flush();
+                return RuntimeValue.Null;
+
+            case "existe":
+                // existe(filename) - Check if file exists
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqTxt.Existe(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "truncar":
+                // truncar(filename) - Truncate file
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqTxt.Truncar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqSavInstance.
+    /// </summary>
+    private RuntimeValue CallArqSavMethod(ArqSavInstance arqSav, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "ler":
+                // ler(filename, listaobj, mode) - Read objects from file
+                if (args.Length >= 3 && args[1].Type == RuntimeValueType.Object &&
+                    args[1].AsObject() is ListaObjInstance lista)
+                    return RuntimeValue.FromInt(arqSav.Ler(args[0].AsString(), lista, (int)args[2].AsInt()));
+                if (args.Length >= 2 && args[1].Type == RuntimeValueType.Object &&
+                    args[1].AsObject() is ListaObjInstance lista2)
+                    return RuntimeValue.FromInt(arqSav.Ler(args[0].AsString(), lista2, 0));
+                return RuntimeValue.FromInt(0);
+
+            case "salvar":
+                // salvar(filename, listaobj, mode, param) - Save objects to file
+                if (args.Length >= 4 && args[1].Type == RuntimeValueType.Object &&
+                    args[1].AsObject() is ListaObjInstance savLista)
+                    return RuntimeValue.FromInt(arqSav.Salvar(args[0].AsString(), savLista,
+                        (int)args[2].AsInt(), args[3].AsString()));
+                if (args.Length >= 3 && args[1].Type == RuntimeValueType.Object &&
+                    args[1].AsObject() is ListaObjInstance savLista2)
+                    return RuntimeValue.FromInt(arqSav.Salvar(args[0].AsString(), savLista2,
+                        (int)args[2].AsInt(), ""));
+                if (args.Length >= 2 && args[1].Type == RuntimeValueType.Object &&
+                    args[1].AsObject() is ListaObjInstance savLista3)
+                    return RuntimeValue.FromInt(arqSav.Salvar(args[0].AsString(), savLista3, 0, ""));
+                return RuntimeValue.FromInt(0);
+
+            case "existe":
+                // existe(filename) - Check if file exists
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqSav.Existe(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "valido":
+                // valido(filename) - Check if file is valid
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqSav.Valido(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "senha":
+                // senha(password) - Set password
+                if (args.Length > 0)
+                    arqSav.Senha(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "dias":
+                // dias(filename) - Get file age in days
+                if (args.Length > 0)
+                    return RuntimeValue.FromInt(arqSav.Dias(args[0].AsString()));
+                return RuntimeValue.FromInt(-1);
+
+            case "apagar":
+                // apagar(filename) - Delete file
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqSav.Apagar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            case "limpar":
+                // limpar(filename) - Truncate file
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(arqSav.Limpar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a TextoVarInstance.
+    /// </summary>
+    private RuntimeValue CallTextoVarMethod(TextoVarInstance textoVar, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "valor":
+                if (args.Length > 0)
+                    return textoVar.Valor(args[0].AsString());
+                return RuntimeValue.Null;
+            case "valorini":
+                return textoVar.ValorIni();
+            case "valorfim":
+                return textoVar.ValorFim();
+            case "mudar":
+                if (args.Length >= 2)
+                    textoVar.Mudar(args[0].AsString(), args[1]);
+                else if (args.Length == 1)
+                {
+                    // mudar("name=value") format
+                    var s = args[0].AsString();
+                    var eq = s.IndexOf('=');
+                    if (eq >= 0)
+                        textoVar.Mudar(s.Substring(0, eq), RuntimeValue.FromString(s.Substring(eq + 1)));
+                }
+                return RuntimeValue.Null;
+            case "ini":
+                return RuntimeValue.FromString(textoVar.Ini());
+            case "fim":
+                return RuntimeValue.FromString(textoVar.Fim());
+            case "depois":
+                return RuntimeValue.FromString(textoVar.Depois());
+            case "antes":
+                return RuntimeValue.FromString(textoVar.Antes());
+            case "nomevar":
+                return RuntimeValue.FromString(textoVar.NomeVar());
+            case "tipo":
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(textoVar.Tipo(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "total":
+                return RuntimeValue.FromInt(textoVar.Total);
+            case "limpar":
+                textoVar.Limpar();
+                return RuntimeValue.Null;
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a TextoObjInstance.
+    /// </summary>
+    private RuntimeValue CallTextoObjMethod(TextoObjInstance textoObj, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "valor":
+                if (args.Length > 0)
+                {
+                    var obj = textoObj.Valor(args[0].AsString());
+                    return obj != null ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+                }
+                return RuntimeValue.Null;
+            case "valorini":
+            {
+                var obj = textoObj.ValorIni();
+                return obj != null ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+            }
+            case "valorfim":
+            {
+                var obj = textoObj.ValorFim();
+                return obj != null ? RuntimeValue.FromObject(obj) : RuntimeValue.Null;
+            }
+            case "mudar":
+                if (args.Length >= 2 && args[1].Type == RuntimeValueType.Object && args[1].AsObject() is BytecodeRuntimeObject rObj)
+                    textoObj.Mudar(args[0].AsString(), rObj);
+                else if (args.Length >= 2)
+                    textoObj.Mudar(args[0].AsString(), null);
+                return RuntimeValue.Null;
+            case "ini":
+                return RuntimeValue.FromString(textoObj.Ini());
+            case "fim":
+                return RuntimeValue.FromString(textoObj.Fim());
+            case "depois":
+                return RuntimeValue.FromString(textoObj.Depois());
+            case "antes":
+                return RuntimeValue.FromString(textoObj.Antes());
+            case "nomevar":
+                return RuntimeValue.FromString(textoObj.NomeVar());
+            case "apagar":
+                if (args.Length > 0)
+                    textoObj.Apagar(args[0].AsString());
+                return RuntimeValue.Null;
+            case "total":
+                return RuntimeValue.FromInt(textoObj.Total);
+            case "limpar":
+                textoObj.Limpar();
+                return RuntimeValue.Null;
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a NomeObjInstance.
+    /// </summary>
+    private RuntimeValue CallNomeObjMethod(NomeObjInstance nomeObj, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "ini":
+                if (args.Length > 0)
+                    nomeObj.Ini(args[0].AsString());
+                return RuntimeValue.Null;
+            case "nome":
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object && args[0].AsObject() is BytecodeRuntimeObject searchObj)
+                    return RuntimeValue.FromInt(nomeObj.FuncNome(searchObj) ? 1 : 0);
+                return RuntimeValue.FromInt(0);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqDirInstance.
+    /// </summary>
+    private RuntimeValue CallArqDirMethod(ArqDirInstance arqDir, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abrir":
+                if (args.Length > 0) arqDir.Abrir(args[0].AsString());
+                return RuntimeValue.Null;
+            case "fechar":
+                arqDir.Fechar();
+                return RuntimeValue.Null;
+            case "depois":
+                arqDir.Depois();
+                return RuntimeValue.Null;
+            case "texto":
+                return RuntimeValue.FromString(arqDir.Texto());
+            case "lin":
+                return RuntimeValue.FromBool(arqDir.Lin);
+            case "tipo":
+                return RuntimeValue.FromString(arqDir.Tipo());
+            case "tamanho":
+                return RuntimeValue.FromInt(arqDir.Tamanho());
+            case "mtempo":
+                return RuntimeValue.FromInt(arqDir.Mtempo());
+            case "atempo":
+                return RuntimeValue.FromInt(arqDir.Atempo());
+            case "barra":
+                if (args.Length > 0) return RuntimeValue.FromString(ArqDirInstance.Barra(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "apagar":
+                if (args.Length > 0) return RuntimeValue.FromBool(ArqDirInstance.Apagar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "apagardir":
+                if (args.Length > 0) return RuntimeValue.FromBool(ArqDirInstance.ApagarDir(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "criardir":
+                if (args.Length > 0) return RuntimeValue.FromBool(ArqDirInstance.CriarDir(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "renomear":
+                if (args.Length >= 2) return RuntimeValue.FromBool(ArqDirInstance.Renomear(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromBool(false);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqLogInstance.
+    /// </summary>
+    private RuntimeValue CallArqLogMethod(ArqLogInstance arqLog, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abrir":
+                if (args.Length > 0) arqLog.Abrir(args[0].AsString());
+                return RuntimeValue.Null;
+            case "msg":
+                if (args.Length > 0) arqLog.Msg(args[0].AsString());
+                return RuntimeValue.Null;
+            case "fechar":
+                arqLog.Fechar();
+                return RuntimeValue.Null;
+            case "valido":
+                return RuntimeValue.FromBool(arqLog.Valido);
+            case "existe":
+                if (args.Length > 0) return RuntimeValue.FromBool(arqLog.Existe(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqMemInstance.
+    /// </summary>
+    private RuntimeValue CallArqMemMethod(ArqMemInstance arqMem, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "ler":
+                if (args.Length > 0) return RuntimeValue.FromString(arqMem.Ler((int)args[0].AsInt()));
+                return RuntimeValue.FromString(arqMem.Ler(0));
+            case "escr":
+                if (args.Length > 0) arqMem.Escr(args[0].AsString());
+                return RuntimeValue.Null;
+            case "lerbin":
+                return RuntimeValue.FromInt(arqMem.LerBin());
+            case "escrbin":
+                if (args.Length > 0) arqMem.EscrBin((int)args[0].AsInt());
+                return RuntimeValue.Null;
+            case "lerbinesp":
+                if (args.Length > 0) return RuntimeValue.FromString(arqMem.LerBinEsp((int)args[0].AsInt()));
+                return RuntimeValue.FromString("");
+            case "add":
+                if (args.Length > 0) arqMem.Add(args[0].AsString());
+                return RuntimeValue.Null;
+            case "addbin":
+                if (args.Length > 0)
+                {
+                    var hexStr = args[0].AsString();
+                    var bytes = new byte[hexStr.Length / 2];
+                    for (int i = 0; i < bytes.Length; i++)
+                    {
+                        if (i * 2 + 1 < hexStr.Length)
+                            bytes[i] = Convert.ToByte(hexStr.Substring(i * 2, 2), 16);
+                    }
+                    arqMem.AddBin(bytes);
+                }
+                return RuntimeValue.Null;
+            case "limpar":
+                arqMem.Limpar();
+                return RuntimeValue.Null;
+            case "truncar":
+                arqMem.Truncar();
+                return RuntimeValue.Null;
+            case "pos":
+                if (args.Length > 0) { arqMem.Pos = (int)args[0].AsInt(); return RuntimeValue.FromInt(arqMem.Pos); }
+                return RuntimeValue.FromInt(arqMem.Pos);
+            case "tamanho":
+                return RuntimeValue.FromInt(arqMem.Tamanho);
+            case "eof":
+                return RuntimeValue.FromBool(arqMem.Eof);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqExecInstance.
+    /// </summary>
+    private RuntimeValue CallArqExecMethod(ArqExecInstance arqExec, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abrir":
+                if (args.Length >= 2)
+                    arqExec.Abrir(args[0].AsString(), args[1].AsString());
+                else if (args.Length >= 1)
+                    arqExec.Abrir(args[0].AsString(), "");
+                return RuntimeValue.Null;
+            case "msg":
+                if (args.Length > 0) arqExec.Msg(args[0].AsString());
+                return RuntimeValue.Null;
+            case "ler":
+                return RuntimeValue.FromString(arqExec.Ler());
+            case "fechar":
+                arqExec.Fechar();
+                return RuntimeValue.Null;
+            case "valido":
+            case "aberto":
+                return RuntimeValue.FromBool(arqExec.Valido);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an ArqProgInstance.
+    /// </summary>
+    private RuntimeValue CallArqProgMethod(ArqProgInstance arqProg, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abrir":
+                if (args.Length > 0) arqProg.Abrir(args[0].AsString());
+                return RuntimeValue.Null;
+            case "fechar":
+                arqProg.Fechar();
+                return RuntimeValue.Null;
+            case "depois":
+                arqProg.Depois();
+                return RuntimeValue.Null;
+            case "lin":
+                return RuntimeValue.FromBool(arqProg.Lin);
+            case "texto":
+                return RuntimeValue.FromString(arqProg.Texto());
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a ProgInstance.
+    /// </summary>
+    private RuntimeValue CallProgMethod(ProgInstance prog, string methodName, RuntimeValue[] args)
+    {
+        // Ensure prog has access to the class registry
+        prog.SetRegistry(_loadedUnits);
+
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            // File iteration - iniarq(filePattern?)
+            case "iniarq":
+                return RuntimeValue.FromString(prog.IniArq(
+                    args.Length > 0 ? args[0].AsString() : ""));
+            case "arquivo":
+                return RuntimeValue.FromString(prog.Arquivo(
+                    args.Length > 0 ? args[0].AsString() : ""));
+            case "arqnome":
+                return RuntimeValue.FromString(prog.ArqNome(
+                    args.Length > 0 ? args[0].AsString() : ""));
+
+            // Class iteration - iniclasse(pattern?)
+            case "iniclasse":
+                return RuntimeValue.FromString(prog.IniClasse(
+                    args.Length > 0 ? args[0].AsString() : ""));
+            case "classe":
+                return RuntimeValue.FromString(prog.Classe());
+            case "clini":
+                return RuntimeValue.FromString(prog.ClIni());
+            case "clfim":
+                return RuntimeValue.FromString(prog.ClFim());
+            case "clantes":
+                return RuntimeValue.FromString(prog.ClAntes());
+            case "cldepois":
+                return RuntimeValue.FromString(prog.ClDepois());
+
+            // Function iteration - inifunc(className, pattern?)
+            case "inifunc":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.IniFunc(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromString(prog.IniFunc(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "inifunctudo":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.IniFuncTudo(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromString(prog.IniFuncTudo(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "inifunccl":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.IniFuncCl(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromString(prog.IniFuncCl(args[0].AsString()));
+                return RuntimeValue.FromString("");
+
+            // Inheritance - iniherda(className)
+            case "iniherda":
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(prog.IniHerda(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "iniherdatudo":
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(prog.IniHerdaTudo(args[0].AsString()));
+                return RuntimeValue.FromString("");
+            case "iniherdainv":
+                if (args.Length > 0)
+                    return RuntimeValue.FromString(prog.IniHerdaInv(args[0].AsString()));
+                return RuntimeValue.FromString("");
+
+            // Line iteration - inilinha(className, funcName?)
+            case "inilinha":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.IniLinha(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromString(prog.IniLinha(args[0].AsString()));
+                return RuntimeValue.FromString("");
+
+            // Universal iteration
+            case "lin":
+                return RuntimeValue.FromInt(prog.Lin());
+            case "texto":
+                return RuntimeValue.FromString(prog.Texto());
+            case "depois":
+                return RuntimeValue.FromString(prog.Depois(
+                    args.Length > 0 ? (int)args[0].AsInt() : 1));
+            case "nivel":
+                return RuntimeValue.FromInt(prog.Nivel());
+
+            // Metadata - existe(className) or existe(className, name)
+            case "existe":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.Existe(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromInt(prog.Existe(args[0].AsString()));
+                return RuntimeValue.FromInt(0);
+
+            // Variable info - all take (className, varName)
+            case "varcomum":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.VarComum(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromInt(0);
+            case "varsav":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.VarSav(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromInt(0);
+            case "varnum":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.VarNum(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromInt(0);
+            case "vartexto":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.VarTexto(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromInt(0);
+            case "vartipo":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.VarTipo(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromString("");
+            case "varlugar":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.VarLugar(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromString("");
+            case "varvetor":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromInt(prog.VarVetor(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromInt(0);
+            case "const":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromString(prog.Const(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromString("");
+
+            // Modification - all take className as first arg
+            case "criar":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.Criar(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromBool(prog.Criar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "apagar":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.Apagar(args[0].AsString(), args[1].AsString()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromBool(prog.Apagar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "apagarlin":
+                if (args.Length >= 3)
+                    return RuntimeValue.FromBool(prog.ApagarLin(args[0].AsString(), args[1].AsString(), (int)args[2].AsInt()));
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.ApagarLin(args[0].AsString(), (int)args[1].AsInt()));
+                return RuntimeValue.FromBool(false);
+            case "criarlin":
+                if (args.Length >= 4)
+                    return RuntimeValue.FromBool(prog.CriarLin(args[0].AsString(), args[1].AsString(), (int)args[2].AsInt(), args[3].AsString()));
+                if (args.Length >= 3)
+                    return RuntimeValue.FromBool(prog.CriarLin(args[0].AsString(), (int)args[1].AsInt(), args[2].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "fantes":
+                if (args.Length >= 3)
+                    return RuntimeValue.FromBool(prog.FAntes(args[0].AsString(), args[1].AsString(), args[2].AsString()));
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.FAntes(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "fdepois":
+                if (args.Length >= 3)
+                    return RuntimeValue.FromBool(prog.FDepois(args[0].AsString(), args[1].AsString(), args[2].AsString()));
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.FDepois(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "renomear":
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(prog.Renomear(args[0].AsString(), args[1].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "salvar":
+                if (args.Length > 0)
+                    return RuntimeValue.FromBool(prog.Salvar(args[0].AsString()));
+                return RuntimeValue.FromBool(false);
+            case "salvartudo":
+                return RuntimeValue.FromBool(prog.SalvarTudo());
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a ServInstance.
+    /// </summary>
+    private RuntimeValue CallServMethod(ServInstance serv, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "abrir":
+                // abrir(address, port) - Open server
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(serv.Abrir(args[0].AsString(), (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromBool(serv.Abrir("0.0.0.0", (int)args[0].AsInt()));
+                return RuntimeValue.FromBool(false);
+
+            case "abrirssl":
+                // abrirssl(address, port) - Open SSL server
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(serv.AbrirSsl(args[0].AsString(), (int)args[1].AsInt()));
+                if (args.Length >= 1)
+                    return RuntimeValue.FromBool(serv.AbrirSsl("0.0.0.0", (int)args[0].AsInt()));
+                return RuntimeValue.FromBool(false);
+
+            case "fechar":
+                // fechar() - Close server
+                serv.Fechar();
+                return RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a SocketInstance.
+    /// </summary>
+    private RuntimeValue CallSocketMethod(SocketInstance socket, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+
+        switch (lowerMethod)
+        {
+            case "abrir":
+                // abrir(host, port) - Open connection
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(socket.Abrir(args[0].AsString(), (int)args[1].AsInt()));
+                return RuntimeValue.FromBool(false);
+
+            case "abrirssl":
+                // abrirssl(host, port) - Open SSL connection
+                if (args.Length >= 2)
+                    return RuntimeValue.FromBool(socket.AbrirSsl(args[0].AsString(), (int)args[1].AsInt()));
+                return RuntimeValue.FromBool(false);
+
+            case "msg":
+                // msg(text) - Send message with newline
+                if (args.Length > 0)
+                    socket.Msg(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "msgsem":
+                // msgsem(text) - Send message without newline
+                if (args.Length > 0)
+                    socket.MsgSem(args[0].AsString());
+                return RuntimeValue.Null;
+
+            case "fechar":
+                // fechar() - Close connection
+                socket.Fechar();
+                return RuntimeValue.Null;
+
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a DebugInstance.
+    /// </summary>
+    private RuntimeValue CallDebugMethod(DebugInstance debug, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "ini":
+                debug.Ini();
+                return RuntimeValue.Null;
+            case "exec":
+                return RuntimeValue.FromInt(debug.Exec);
+            case "utempo":
+                return RuntimeValue.FromDouble(debug.Utempo());
+            case "stempo":
+                return RuntimeValue.FromDouble(debug.Stempo());
+            case "mem":
+                return RuntimeValue.FromDouble(debug.Mem());
+            case "memmax":
+                return RuntimeValue.FromDouble(debug.MemMax());
+            case "func":
+                return RuntimeValue.FromInt(_callStack.Count);
+            case "ver":
+                return RuntimeValue.FromString(debug.Ver());
+            case "data":
+                return RuntimeValue.FromString(debug.Data());
+            case "cmd":
+                // Dynamic instruction execution - complex, return empty for now
+                return RuntimeValue.FromString("");
+            case "passo":
+                // Step-through debugging - complex, return false for now
+                return RuntimeValue.Null;
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an IntTempoInstance.
+    /// </summary>
+    private RuntimeValue CallIntTempoMethod(IntTempoInstance intTempo, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abs":
+                return RuntimeValue.FromInt(Math.Abs(intTempo.Valor));
+            case "pos":
+                return RuntimeValue.FromInt(intTempo.Valor > 0 ? intTempo.Valor : -intTempo.Valor);
+            case "neg":
+                return RuntimeValue.FromInt(intTempo.Valor < 0 ? intTempo.Valor : -intTempo.Valor);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Call a method on an IntExecInstance.
+    /// </summary>
+    private RuntimeValue CallIntExecMethod(IntExecInstance intExec, string methodName, RuntimeValue[] args)
+    {
+        // IntExec has no methods, only properties (value read/write)
+        return RuntimeValue.Null;
+    }
+
+    /// <summary>
+    /// Call a method on an IntIncInstance.
+    /// </summary>
+    private RuntimeValue CallIntIncMethod(IntIncInstance intInc, string methodName, RuntimeValue[] args)
+    {
+        var lowerMethod = methodName.ToLowerInvariant();
+        switch (lowerMethod)
+        {
+            case "abs":
+                return RuntimeValue.FromInt(Math.Abs(intInc.Valor));
+            case "pos":
+                return RuntimeValue.FromInt(intInc.Valor > 0 ? intInc.Valor : -intInc.Valor);
+            case "neg":
+                return RuntimeValue.FromInt(intInc.Valor < 0 ? intInc.Valor : -intInc.Valor);
+            default:
+                return RuntimeValue.Null;
+        }
+    }
+
+    /// <summary>
+    /// Create an instance of a special type (telatxt, textotxt, listaobj, etc.).
+    /// Used for local variable initialization.
+    /// </summary>
+    private RuntimeValue CreateSpecialTypeInstance(string typeName)
+    {
+        return typeName.ToLowerInvariant() switch
+        {
+            "telatxt" => RuntimeValue.FromObject(new TelaTxtInstance()),
+            "textotxt" => RuntimeValue.FromObject(new TextoTxtInstance()),
+            "textopos" => RuntimeValue.FromObject(new TextoPosInstance()),
+            "listaobj" => RuntimeValue.FromObject(new ListaObjInstance()),
+            "listaitem" => RuntimeValue.FromObject(new ListaItemInstance()),
+            "indiceobj" => RuntimeValue.FromObject(new IndiceObjInstance()),
+            "indiceitem" => RuntimeValue.FromObject(new IndiceItemInstance()),
+            "inttempo" => RuntimeValue.FromObject(new IntTempoInstance()),
+            "intexec" => RuntimeValue.FromObject(new IntExecInstance()),
+            "intinc" => RuntimeValue.FromObject(new IntIncInstance()),
+            "datahora" => RuntimeValue.FromObject(new DataHoraInstance()),
+            "debug" => RuntimeValue.FromObject(new DebugInstance()),
+            "arqtxt" => RuntimeValue.FromObject(new ArqTxtInstance()),
+            "arqsav" => RuntimeValue.FromObject(new ArqSavInstance()),
+            "serv" => RuntimeValue.FromObject(new ServInstance()),
+            "socket" => RuntimeValue.FromObject(new SocketInstance()),
+            _ => RuntimeValue.Null
+        };
+    }
+
+    /// <summary>
+    /// Get a property from a TelaTxtInstance (telatxt special type).
+    /// </summary>
+    private RuntimeValue GetTelaTxtProperty(TelaTxtInstance telaTxt, string propertyName)
+    {
+        var lowerProp = propertyName.ToLowerInvariant();
+
+        return lowerProp switch
+        {
+            "proto" => RuntimeValue.FromInt(telaTxt.Proto),
+            "total" => RuntimeValue.FromInt(telaTxt.Total),
+            "texto" => RuntimeValue.FromString(telaTxt.Texto),
+            "linha" => RuntimeValue.FromInt(telaTxt.Linha),
+            "posx" => RuntimeValue.FromInt(telaTxt.PosX),
+            "isactive" => RuntimeValue.FromBool(telaTxt.IsActive),
+            _ => RuntimeValue.Null
+        };
+    }
+
+    /// <summary>
+    /// Set a property on a TelaTxtInstance (telatxt special type).
+    /// </summary>
+    private void SetTelaTxtProperty(TelaTxtInstance telaTxt, string propertyName, RuntimeValue value)
+    {
+        var lowerProp = propertyName.ToLowerInvariant();
+
+        switch (lowerProp)
+        {
+            case "total":
+                telaTxt.Total = (int)value.AsInt();
+                break;
+            case "texto":
+                telaTxt.Texto = value.AsString();
+                break;
+            case "linha":
+                telaTxt.Linha = (int)value.AsInt();
+                break;
+            case "isactive":
+                telaTxt.IsActive = value.IsTruthy;
+                break;
+            // proto and posx are read-only
+        }
     }
 
     /// <summary>
@@ -1026,6 +3222,72 @@ public sealed class BytecodeInterpreter
         var bytecode = function.Bytecode;
         // Use the defining unit's string pool - important for inherited methods
         var stringPool = definingUnit.StringPool;
+
+        try
+        {
+            var result = ExecuteBytecodeLoop(bytecode, stringPool, arguments, frame);
+
+            // Restore caller's locals and IP
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
+
+            return result;
+        }
+        catch
+        {
+            // Restore caller's locals and IP on exception too
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
+            if (_callStack.Count > 0) _callStack.Pop();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Execute a static method call (classe:função with no object).
+    /// In IntMUD C++, static calls execute with this=null.
+    /// </summary>
+    private RuntimeValue ExecuteStaticMethodCall(BytecodeCompiledFunction function, BytecodeCompiledUnit classUnit, RuntimeValue[] arguments)
+    {
+        // Push call frame without 'this' object
+        if (_callStack.Count >= MaxCallDepth)
+        {
+            throw new RuntimeException("Call stack overflow");
+        }
+
+        // Save caller's locals if this is a nested call
+        RuntimeValue[]? savedLocals = null;
+        int savedIp = _ip;
+        if (_callStack.Count > 0)
+        {
+            savedLocals = new RuntimeValue[MaxLocals];
+            Array.Copy(_locals, savedLocals, MaxLocals);
+        }
+
+        var frame = new CallFrame
+        {
+            Function = function,
+            ReturnAddress = _ip,
+            LocalsBase = 0,
+            StackBase = _sp,
+            Arguments = arguments,
+            ThisObject = null  // Static call - no 'this' object
+        };
+        _callStack.Push(frame);
+
+        // Initialize locals for this function
+        Array.Clear(_locals, 0, _locals.Length);
+
+        // Execute bytecode
+        _ip = 0;
+        var bytecode = function.Bytecode;
+        var stringPool = classUnit.StringPool;
 
         try
         {
@@ -1480,6 +3742,11 @@ public sealed class BytecodeInterpreter
                     Push(RuntimeValue.Null); // Delete expression evaluates to null
                     break;
 
+                case BytecodeOp.InitSpecialType:
+                    var initTypeName = stringPool[ReadUInt16(bytecode)];
+                    Push(CreateSpecialTypeInstance(initTypeName));
+                    break;
+
                 default:
                     throw new RuntimeException($"Unknown opcode: {op}");
             }
@@ -1532,6 +3799,19 @@ public sealed class BytecodeInterpreter
             case "txt":
                 // txt(value) - convert to string
                 // txt(value, n) - get first n characters
+                // txt(value, start, length) - get substring from position start with length
+                if (args.Length >= 3)
+                {
+                    var str = args[0].AsString();
+                    var start = (int)args[1].AsInt();
+                    var length = (int)args[2].AsInt();
+                    if (start < 0) start = 0;
+                    if (start >= str.Length) return RuntimeValue.FromString("");
+                    if (length <= 0) return RuntimeValue.FromString("");
+                    var maxLen = str.Length - start;
+                    if (length > maxLen) length = maxLen;
+                    return RuntimeValue.FromString(str.Substring(start, length));
+                }
                 if (args.Length >= 2)
                 {
                     var str = args[0].AsString();
@@ -2189,13 +4469,22 @@ public sealed class BytecodeInterpreter
 
             case "apagar":
             case "delete":
-                // apagar(object) - mark object for deletion
-                // In IntMUD, this removes the object from the game world
+                // apagar(object) - call 'fim' destructor then remove from registry
                 if (args.Length > 0 && args[0].Type == RuntimeValueType.Object)
                 {
                     var objToDelete = args[0].AsObject() as BytecodeRuntimeObject;
                     if (objToDelete != null)
                     {
+                        // Call destructor 'fim' if it exists (like C++ apagar → fim)
+                        var (destructor, destructorUnit) = objToDelete.GetMethodWithUnit("fim");
+                        if (destructor != null && destructorUnit != null)
+                        {
+                            try
+                            {
+                                ExecuteFunctionWithThis(destructor, objToDelete, destructorUnit, Array.Empty<RuntimeValue>());
+                            }
+                            catch { /* Ignore errors in destructor */ }
+                        }
                         GlobalObjectRegistry.Unregister(objToDelete);
                     }
                 }
@@ -2465,17 +4754,23 @@ public sealed class BytecodeInterpreter
 
             // Object navigation functions
             case "objantes":
-                // objantes(obj) - get previous object in list (stub - returns null)
+                // objantes(obj) - get previous object in per-class linked list
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object && args[0].AsObject() is BytecodeRuntimeObject prevTarget)
+                    return prevTarget.PreviousObject != null ? RuntimeValue.FromObject(prevTarget.PreviousObject) : RuntimeValue.Null;
                 return RuntimeValue.Null;
 
             case "objdepois":
-                // objdepois(obj) - get next object in list (stub - returns null)
+                // objdepois(obj) - get next object in per-class linked list
+                if (args.Length > 0 && args[0].Type == RuntimeValueType.Object && args[0].AsObject() is BytecodeRuntimeObject nextTarget)
+                    return nextTarget.NextObject != null ? RuntimeValue.FromObject(nextTarget.NextObject) : RuntimeValue.Null;
                 return RuntimeValue.Null;
 
             // Variable exchange functions
             case "vartroca":
-                // vartroca(var1, var2) - swap two variables (returns first value)
-                return args.Length > 0 ? args[0] : RuntimeValue.Null;
+                return ExecuteVarTroca(args, encoded: false);
+
+            case "vartrocacod":
+                return ExecuteVarTroca(args, encoded: true);
 
             // Args function
             case "args":
@@ -2572,6 +4867,545 @@ public sealed class BytecodeInterpreter
     }
 
     /// <summary>
+    /// Character normalization table for vartroca pattern matching.
+    /// Matches C++ TABELA_COMPARAVAR (tabNOMES2): lowercase, accent-normalize,
+    /// underscore→space, unknown chars→themselves.
+    /// </summary>
+    private static readonly char[] VarTrocaNormTable = BuildVarTrocaNormTable();
+
+    private static char[] BuildVarTrocaNormTable()
+    {
+        var table = new char[256];
+        // Initialize with identity mapping
+        for (int i = 0; i < 256; i++)
+            table[i] = (char)i;
+        // Uppercase → lowercase
+        for (int c = 'A'; c <= 'Z'; c++)
+            table[c] = (char)(c + 32);
+        // Underscore → space (matches tabNOMES2)
+        table['_'] = ' ';
+        table[' '] = ' ';
+        // @ stays as @
+        table['@'] = '@';
+        // Accented characters → base letter (Latin-1)
+        table[0xC0] = 'a'; table[0xC1] = 'a'; table[0xC2] = 'a'; table[0xC3] = 'a'; // ÀÁÂÃ
+        table[0xC4] = 'a'; table[0xC5] = 'a'; // ÄÅ
+        table[0xC7] = (char)0xE7; // Ç → ç
+        table[0xC8] = 'e'; table[0xC9] = 'e'; table[0xCA] = 'e'; table[0xCB] = 'e'; // ÈÉÊË
+        table[0xCC] = 'i'; table[0xCD] = 'i'; table[0xCE] = 'i'; table[0xCF] = 'i'; // ÌÍÎÏ
+        table[0xD2] = 'o'; table[0xD3] = 'o'; table[0xD4] = 'o'; table[0xD5] = 'o'; // ÒÓÔÕ
+        table[0xD6] = 'o'; // Ö
+        table[0xD9] = 'u'; table[0xDA] = 'u'; table[0xDB] = 'u'; table[0xDC] = 'u'; // ÙÚÛÜ
+        table[0xE0] = 'a'; table[0xE1] = 'a'; table[0xE2] = 'a'; table[0xE3] = 'a'; // àáâã
+        table[0xE4] = 'a'; table[0xE5] = 'a'; // äå
+        table[0xE8] = 'e'; table[0xE9] = 'e'; table[0xEA] = 'e'; table[0xEB] = 'e'; // èéêë
+        table[0xEC] = 'i'; table[0xED] = 'i'; table[0xEE] = 'i'; table[0xEF] = 'i'; // ìíîï
+        table[0xF2] = 'o'; table[0xF3] = 'o'; table[0xF4] = 'o'; table[0xF5] = 'o'; // òóôõ
+        table[0xF6] = 'o'; // ö
+        table[0xF9] = 'u'; table[0xFA] = 'u'; table[0xFB] = 'u'; table[0xFC] = 'u'; // ùúûü
+        return table;
+    }
+
+    private static char NormChar(char c)
+    {
+        return c < 256 ? VarTrocaNormTable[c] : c;
+    }
+
+    /// <summary>
+    /// vartroca(text, pattern, var_prefix, probability, spacing) - C++ compatible variable substitution.
+    /// Scans text for pattern prefix, then matches characters after prefix against sorted variable/function
+    /// names from the current object's class hierarchy, replacing with their values.
+    /// </summary>
+    private RuntimeValue ExecuteVarTroca(RuntimeValue[] args, bool encoded)
+    {
+        if (args.Length < 3)
+            return args.Length > 0 ? RuntimeValue.FromString(args[0].AsString()) : RuntimeValue.FromString("");
+
+        // Get the current object from the call stack
+        BytecodeRuntimeObject? currentObj = null;
+        if (_callStack.Count > 0)
+            currentObj = _callStack.Peek().ThisObject;
+        if (currentObj == null)
+            return RuntimeValue.FromString(args[0].AsString());
+
+        var text = args[0].AsString();
+        var patternStr = args[1].AsString();
+        var varPrefix = args[2].AsString();
+        int probability = args.Length >= 4 ? (int)args[3].AsInt() : 100;
+        int spacing = args.Length >= 5 ? (int)args[4].AsInt() : 0;
+        if (spacing < 0) spacing = 0;
+
+        // If probability is 0 or less, no replacements possible
+        if (probability <= 0)
+            return RuntimeValue.FromString(text);
+
+        // Normalize the pattern
+        var normalizedPattern = new char[patternStr.Length];
+        for (int i = 0; i < patternStr.Length; i++)
+            normalizedPattern[i] = NormChar(patternStr[i]);
+
+        // Build sorted list of member names from the class hierarchy
+        // Each entry has: normalized name, original name, type (var/func/const), defining unit
+        var members = BuildSortedMemberList(currentObj, varPrefix);
+        if (members.Count == 0)
+            return RuntimeValue.FromString(text);
+
+        // Scan text and perform replacements
+        var result = new System.Text.StringBuilder(text.Length);
+        int pos = 0;
+        int spacingCounter = 0;
+        var random = new Random();
+
+        while (pos < text.Length)
+        {
+            // Try to match pattern at current position
+            bool patternMatched = true;
+            if (normalizedPattern.Length == 0)
+            {
+                // Empty pattern - always matches (every position is a candidate)
+                patternMatched = true;
+            }
+            else
+            {
+                for (int i = 0; i < normalizedPattern.Length; i++)
+                {
+                    if (pos + i >= text.Length || NormChar(text[pos + i]) != normalizedPattern[i])
+                    {
+                        patternMatched = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!patternMatched)
+            {
+                result.Append(text[pos]);
+                pos++;
+                continue;
+            }
+
+            // Pattern matched - search for a matching variable name
+            int afterPattern = pos + normalizedPattern.Length;
+            var match = FindLongestMatch(members, text, afterPattern, encoded, probability, random);
+
+            if (match.Index < 0 || (match.Index >= 0 && spacingCounter > 0))
+            {
+                // No match found, or spacing constraint active
+                if (match.Index >= 0 && spacingCounter > 0)
+                    spacingCounter--;
+
+                if (normalizedPattern.Length > 0)
+                {
+                    result.Append(text[pos]);
+                    pos++;
+                }
+                else
+                {
+                    // Empty pattern with no match - just copy char
+                    result.Append(text[pos]);
+                    pos++;
+                }
+                continue;
+            }
+
+            // Found a match - reset spacing counter
+            spacingCounter = spacing;
+
+            // Get the replacement value
+            var member = members[match.Index];
+            string replacement = GetMemberStringValue(currentObj, member, text, afterPattern, match.MatchLength);
+
+            result.Append(replacement);
+            pos = afterPattern + match.MatchLength;
+        }
+
+        return RuntimeValue.FromString(result.ToString());
+    }
+
+    private struct VarTrocaMember
+    {
+        public string NormalizedName; // For binary search comparison
+        public string OriginalName;   // Original member name
+        public char MemberType;       // 'v'=variable, 'f'=function, 'c'=constant
+        public BytecodeCompiledUnit DefiningUnit;
+    }
+
+    private struct VarTrocaMatch
+    {
+        public int Index;       // Index in member list (-1 = no match)
+        public int MatchLength; // How many chars in text were matched
+    }
+
+    /// <summary>
+    /// Build a sorted list of members from the object's class hierarchy,
+    /// filtered by the variable name prefix.
+    /// </summary>
+    private static List<VarTrocaMember> BuildSortedMemberList(BytecodeRuntimeObject obj, string varPrefix)
+    {
+        var members = new List<VarTrocaMember>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // Iterate class hierarchy (most derived first)
+        foreach (var unit in obj.ClassHierarchy)
+        {
+            // Add variables
+            foreach (var variable in unit.Variables)
+            {
+                var nameAfterPrefix = GetNameAfterPrefix(variable.Name, varPrefix);
+                if (nameAfterPrefix == null) continue;
+                if (!seen.Add(variable.Name)) continue;
+
+                members.Add(new VarTrocaMember
+                {
+                    NormalizedName = NormalizeString(nameAfterPrefix),
+                    OriginalName = variable.Name,
+                    MemberType = 'v',
+                    DefiningUnit = unit
+                });
+            }
+
+            // Add functions
+            foreach (var (funcName, _) in unit.Functions)
+            {
+                var nameAfterPrefix = GetNameAfterPrefix(funcName, varPrefix);
+                if (nameAfterPrefix == null) continue;
+                if (!seen.Add(funcName)) continue;
+
+                members.Add(new VarTrocaMember
+                {
+                    NormalizedName = NormalizeString(nameAfterPrefix),
+                    OriginalName = funcName,
+                    MemberType = 'f',
+                    DefiningUnit = unit
+                });
+            }
+
+            // Add constants
+            foreach (var (constName, _) in unit.Constants)
+            {
+                var nameAfterPrefix = GetNameAfterPrefix(constName, varPrefix);
+                if (nameAfterPrefix == null) continue;
+                if (!seen.Add(constName)) continue;
+
+                members.Add(new VarTrocaMember
+                {
+                    NormalizedName = NormalizeString(nameAfterPrefix),
+                    OriginalName = constName,
+                    MemberType = 'c',
+                    DefiningUnit = unit
+                });
+            }
+        }
+
+        // Sort by normalized name for binary search
+        members.Sort((a, b) => string.Compare(a.NormalizedName, b.NormalizedName, StringComparison.Ordinal));
+        return members;
+    }
+
+    /// <summary>
+    /// Get the part of the name after the prefix, or null if it doesn't match.
+    /// </summary>
+    private static string? GetNameAfterPrefix(string name, string prefix)
+    {
+        if (string.IsNullOrEmpty(prefix))
+            return name;
+
+        if (name.Length < prefix.Length)
+            return null;
+
+        // Case-insensitive prefix comparison
+        for (int i = 0; i < prefix.Length; i++)
+        {
+            if (NormChar(name[i]) != NormChar(prefix[i]))
+                return null;
+        }
+
+        return name[prefix.Length..];
+    }
+
+    /// <summary>
+    /// Normalize a string using the vartroca comparison table.
+    /// </summary>
+    private static string NormalizeString(string s)
+    {
+        var chars = new char[s.Length];
+        for (int i = 0; i < s.Length; i++)
+            chars[i] = NormChar(s[i]);
+        return new string(chars);
+    }
+
+    /// <summary>
+    /// Find the longest matching variable name in the sorted member list.
+    /// Uses binary search with progressive character matching, similar to C++ algorithm.
+    /// </summary>
+    private static VarTrocaMatch FindLongestMatch(
+        List<VarTrocaMember> members, string text, int textPos, bool encoded,
+        int probability, Random random)
+    {
+        if (textPos >= text.Length || members.Count == 0)
+            return new VarTrocaMatch { Index = -1, MatchLength = 0 };
+
+        int ini = 0;
+        int fim = members.Count - 1;
+        int bestIndex = -1;
+        int bestLength = 0;
+        int charOffset = 0;
+
+        while (textPos + charOffset <= text.Length && ini <= fim)
+        {
+            // Get the normalized character from text at current position
+            char textChar;
+            if (textPos + charOffset < text.Length)
+                textChar = NormChar(text[textPos + charOffset]);
+            else
+                break; // End of text
+
+            if (textChar == '\0')
+                break;
+
+            // Binary search phase 1: find first member with this char at position charOffset
+            int xini = -1, xfim = fim;
+            {
+                int lo = ini, hi = fim;
+                while (lo <= hi)
+                {
+                    int mid = (lo + hi) / 2;
+                    char memberChar = charOffset < members[mid].NormalizedName.Length
+                        ? members[mid].NormalizedName[charOffset]
+                        : '\0';
+
+                    if (memberChar == textChar)
+                    {
+                        xini = mid;
+                        hi = mid - 1;
+                    }
+                    else if (memberChar < textChar)
+                    {
+                        lo = mid + 1;
+                    }
+                    else
+                    {
+                        xfim = hi = mid - 1;
+                    }
+                }
+            }
+
+            if (xini < 0)
+                break; // No member matches at this character position
+
+            // Binary search phase 2: find last member with this char at position charOffset
+            {
+                int lo = xini, hi = xfim;
+                while (lo <= hi)
+                {
+                    int mid = (lo + hi) / 2;
+                    char memberChar = charOffset < members[mid].NormalizedName.Length
+                        ? members[mid].NormalizedName[charOffset]
+                        : '\0';
+
+                    if (memberChar == textChar)
+                    {
+                        xfim = mid;
+                        lo = mid + 1;
+                    }
+                    else if (memberChar < textChar)
+                    {
+                        lo = mid + 1;
+                    }
+                    else
+                    {
+                        hi = mid - 1;
+                    }
+                }
+            }
+
+            charOffset++;
+
+            // Check if xini's name is a complete match (all chars consumed)
+            if (charOffset == members[xini].NormalizedName.Length)
+            {
+                // Apply probability check
+                if (probability >= 100 || random.Next(100) < probability)
+                {
+                    bestIndex = xini;
+                    bestLength = charOffset;
+                }
+            }
+
+            // Advance common characters between xini and xfim
+            while (textPos + charOffset < text.Length)
+            {
+                if (charOffset >= members[xini].NormalizedName.Length ||
+                    charOffset >= members[xfim].NormalizedName.Length)
+                    break;
+
+                char c1 = members[xini].NormalizedName[charOffset];
+                char c2 = members[xfim].NormalizedName[charOffset];
+                if (c1 != c2)
+                    break;
+
+                char tc = NormChar(text[textPos + charOffset]);
+                if (tc != c1)
+                    break;
+
+                charOffset++;
+
+                // Check again if xini's name is complete
+                if (charOffset == members[xini].NormalizedName.Length)
+                {
+                    if (probability >= 100 || random.Next(100) < probability)
+                    {
+                        bestIndex = xini;
+                        bestLength = charOffset;
+                    }
+                }
+            }
+
+            // Check if we should continue searching
+            if (textPos + charOffset >= text.Length)
+                break;
+            if (charOffset >= members[xfim].NormalizedName.Length)
+                break;
+
+            ini = xini;
+            fim = xfim;
+        }
+
+        return new VarTrocaMatch { Index = bestIndex, MatchLength = bestLength };
+    }
+
+    /// <summary>
+    /// Get the string value of a matched member for vartroca substitution.
+    /// </summary>
+    private string GetMemberStringValue(BytecodeRuntimeObject obj, VarTrocaMember member,
+        string text, int afterPattern, int matchLength)
+    {
+        switch (member.MemberType)
+        {
+            case 'v':
+            {
+                // Simple variable - get its string value
+                var value = obj.GetField(member.OriginalName);
+                return value.AsString();
+            }
+            case 'c':
+            {
+                // Constant - get its value
+                var constant = obj.GetConstant(member.OriginalName);
+                if (constant == null) return "";
+                return constant.Type switch
+                {
+                    ConstantType.Int => constant.IntValue.ToString(),
+                    ConstantType.Double => constant.DoubleValue.ToString(),
+                    ConstantType.String => constant.StringValue,
+                    ConstantType.Expression => EvaluateConstantExpression(obj, member, text, afterPattern, matchLength),
+                    _ => ""
+                };
+            }
+            case 'f':
+            {
+                // Function - call it with the matched text suffix as argument
+                var suffix = text.Substring(afterPattern, matchLength);
+                return CallVarTrocaFunction(obj, member.OriginalName, suffix);
+            }
+            default:
+                return "";
+        }
+    }
+
+    /// <summary>
+    /// Evaluate a constant expression for vartroca.
+    /// Expression constants reference functions on the object that need to be called.
+    /// </summary>
+    private string EvaluateConstantExpression(BytecodeRuntimeObject obj, VarTrocaMember member,
+        string text, int afterPattern, int matchLength)
+    {
+        // For expression constants, they typically reference a function call like _tela.msg(arg0)
+        // For vartroca purposes, we'll try to get the value directly from the object
+        var value = obj.GetField(member.OriginalName);
+        if (!value.IsNull)
+            return value.AsString();
+        return "";
+    }
+
+    /// <summary>
+    /// Call a function on the object for vartroca substitution.
+    /// The function receives the matched text suffix as an argument.
+    /// </summary>
+    private string CallVarTrocaFunction(BytecodeRuntimeObject obj, string funcName, string textArg)
+    {
+        var (function, definingUnit) = obj.GetMethodWithUnit(funcName);
+        if (function == null || definingUnit == null)
+            return "";
+
+        try
+        {
+            var funcArgs = new RuntimeValue[] { RuntimeValue.FromString(textArg) };
+            var result = CallObjectMethodDirect(obj, function, definingUnit, funcArgs);
+            return result.AsString();
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Call a method on a BytecodeRuntimeObject, pushing a call frame with 'this' set.
+    /// Used by vartroca to invoke functions during substitution.
+    /// </summary>
+    private RuntimeValue CallObjectMethodDirect(BytecodeRuntimeObject obj, BytecodeCompiledFunction function,
+        BytecodeCompiledUnit classUnit, RuntimeValue[] arguments)
+    {
+        if (_callStack.Count >= MaxCallDepth)
+            throw new RuntimeException("Call stack overflow");
+
+        RuntimeValue[]? savedLocals = null;
+        int savedIp = _ip;
+        if (_callStack.Count > 0)
+        {
+            savedLocals = new RuntimeValue[MaxLocals];
+            Array.Copy(_locals, savedLocals, MaxLocals);
+        }
+
+        var frame = new CallFrame
+        {
+            Function = function,
+            ReturnAddress = _ip,
+            LocalsBase = 0,
+            StackBase = _sp,
+            Arguments = arguments,
+            ThisObject = obj
+        };
+        _callStack.Push(frame);
+
+        Array.Clear(_locals, 0, _locals.Length);
+        _ip = 0;
+
+        try
+        {
+            var result = ExecuteBytecodeLoop(function.Bytecode, classUnit.StringPool, arguments, frame);
+
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
+            return result;
+        }
+        catch
+        {
+            if (savedLocals != null)
+            {
+                Array.Copy(savedLocals, _locals, MaxLocals);
+                _ip = savedIp;
+            }
+            if (_callStack.Count > 0) _callStack.Pop();
+            throw;
+        }
+    }
+
+    /// <summary>
     /// escreva(args...) - Write values to output without newline.
     /// </summary>
     private RuntimeValue ExecuteEscreva(RuntimeValue[] args)
@@ -2663,12 +5497,16 @@ public sealed class BytecodeInterpreter
         RuntimeValueType.Object => "ref",
         RuntimeValueType.Boolean => "int",
         RuntimeValueType.Array => "vetor",
+        RuntimeValueType.ClassReference => "classe",
         _ => "?"
     };
 
     private bool IsInstanceOf(RuntimeValue value, string className)
     {
-        // TODO: Implement instanceof check
+        if (value.Type == RuntimeValueType.Object && value.AsObject() is BytecodeRuntimeObject runtimeObj)
+        {
+            return runtimeObj.IsInstanceOf(className);
+        }
         return false;
     }
 
@@ -2680,17 +5518,57 @@ public sealed class BytecodeInterpreter
         {
             return RuntimeValue.FromObject(obj);
         }
+
+        // If no object exists, return a ClassReference for static method calls.
+        // This allows calling classe:função even when no object of that class exists.
+        // In IntMUD C++, classe:função is a static call executed with this=null.
+        if (_loadedUnits.TryGetValue(className, out var unit))
+        {
+            return RuntimeValue.FromClassReference(unit);
+        }
+
         return RuntimeValue.Null;
     }
 
     private RuntimeValue LoadClassMember(string className, string memberName)
     {
+        // Get current 'this' object - used for calling parent class methods (like super() in OOP)
+        var currentFrame = _callStack.Count > 0 ? _callStack.Peek() : default;
+        var thisObj = currentFrame.ThisObject;
+
         // Try to load a constant from the class
+        // First check current unit
         if (_unit.ClassName.Equals(className, StringComparison.OrdinalIgnoreCase))
         {
             if (_unit.Constants.TryGetValue(memberName, out var constant))
             {
                 return EvaluateConstant(constant);
+            }
+            // Check if it's a function - call with current 'this' object if available
+            if (_unit.Functions.TryGetValue(memberName, out var function))
+            {
+                if (thisObj != null)
+                    return ExecuteFunctionWithThis(function, thisObj, _unit, Array.Empty<RuntimeValue>());
+                else
+                    return ExecuteStaticMethodCall(function, _unit, Array.Empty<RuntimeValue>());
+            }
+        }
+
+        // Then check loaded units (for accessing constants/functions from other classes)
+        if (_loadedUnits.TryGetValue(className, out var unit))
+        {
+            if (unit.Constants.TryGetValue(memberName, out var constant))
+            {
+                return EvaluateConstant(constant);
+            }
+            // Check if it's a function - call with current 'this' object if available
+            // This enables calling parent class methods like jogador:ini from jogolocal
+            if (unit.Functions.TryGetValue(memberName, out var function))
+            {
+                if (thisObj != null)
+                    return ExecuteFunctionWithThis(function, thisObj, unit, Array.Empty<RuntimeValue>());
+                else
+                    return ExecuteStaticMethodCall(function, unit, Array.Empty<RuntimeValue>());
             }
         }
 
@@ -2744,7 +5622,8 @@ public sealed class BytecodeInterpreter
 
         try
         {
-            return EvaluateExpressionBytecode(constant.ExpressionBytecode);
+            // Use the correct string pool from the defining unit
+            return EvaluateExpressionBytecode(constant.ExpressionBytecode, unit.StringPool);
         }
         finally
         {
@@ -2757,11 +5636,11 @@ public sealed class BytecodeInterpreter
     /// Execute expression bytecode in the current context and return the result.
     /// Used for evaluating constant expressions at runtime.
     /// </summary>
-    private RuntimeValue EvaluateExpressionBytecode(byte[] bytecode)
+    private RuntimeValue EvaluateExpressionBytecode(byte[] bytecode, List<string>? overrideStringPool = null)
     {
         // Get current frame for context (args, this, etc.)
         var frame = _callStack.Count > 0 ? _callStack.Peek() : default;
-        var stringPool = _unit.StringPool;
+        var stringPool = overrideStringPool ?? _unit.StringPool;
         var savedIp = _ip;
         var savedSp = _sp;
 
@@ -2845,33 +5724,38 @@ public sealed class BytecodeInterpreter
                         break;
 
                     case BytecodeOp.LoadField:
-                        var fieldName = stringPool[ReadUInt16Expr(bytecode)];
-                        if (frame.ThisObject != null)
-                            Push(frame.ThisObject.GetField(fieldName));
-                        else
-                            Push(RuntimeValue.Null);
+                        {
+                            var fieldName = stringPool[ReadUInt16Expr(bytecode)];
+                            var obj = Pop();  // Pop the object from stack
+                            var fieldValue = LoadField(obj, fieldName);
+                            Push(fieldValue);
+                        }
                         break;
 
                     case BytecodeOp.LoadFieldDynamic:
-                        var dynFieldName = Pop().AsString();
-                        if (frame.ThisObject != null)
-                            Push(frame.ThisObject.GetField(dynFieldName));
-                        else
-                            Push(RuntimeValue.Null);
+                        {
+                            var dynFieldName = Pop().AsString();
+                            var obj = Pop();  // Pop the object from stack
+                            Push(LoadField(obj, dynFieldName));
+                        }
                         break;
 
                     case BytecodeOp.StoreField:
-                        fieldName = stringPool[ReadUInt16Expr(bytecode)];
-                        var storeValue = Pop();
-                        if (frame.ThisObject != null)
-                            frame.ThisObject.SetField(fieldName, storeValue);
+                        {
+                            var fieldName = stringPool[ReadUInt16Expr(bytecode)];
+                            var storeValue = Pop();
+                            var obj = Pop();  // Pop the object from stack
+                            StoreField(obj, fieldName, storeValue);
+                        }
                         break;
 
                     case BytecodeOp.StoreFieldDynamic:
-                        dynFieldName = Pop().AsString();
-                        storeValue = Pop();
-                        if (frame.ThisObject != null)
-                            frame.ThisObject.SetField(dynFieldName, storeValue);
+                        {
+                            var dynFieldName = Pop().AsString();
+                            var obj = Pop();  // Pop the object from stack
+                            var storeValue = Pop();
+                            StoreField(obj, dynFieldName, storeValue);
+                        }
                         break;
 
                     case BytecodeOp.LoadClass:

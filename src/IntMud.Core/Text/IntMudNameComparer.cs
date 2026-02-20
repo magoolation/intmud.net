@@ -42,8 +42,9 @@ public sealed class IntMudNameComparer : IEqualityComparer<string>, IComparer<st
 
         // Numbers map to themselves (already set)
 
-        // Underscore and space are equivalent - both map to space
-        table['_'] = ' ';
+        // Space maps to space; underscore stays as underscore
+        // (C++ tabCOMPLETO explicitly keeps '_' = '_', unlike tabNOMES1 which maps to space)
+        table['_'] = '_';
         table[' '] = ' ';
 
         // @ is valid in identifiers

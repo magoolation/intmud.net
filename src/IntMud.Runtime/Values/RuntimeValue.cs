@@ -11,7 +11,12 @@ public enum RuntimeValueType
     String,
     Object,
     Boolean,
-    Array
+    Array,
+    /// <summary>
+    /// Reference to a class (for static method calls like classe:função).
+    /// The object value contains a BytecodeCompiledUnit.
+    /// </summary>
+    ClassReference
 }
 
 /// <summary>
@@ -100,6 +105,13 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
         value == null ? Null : new(RuntimeValueType.Array, objectValue: value);
 
     /// <summary>
+    /// Create a class reference value (for static method calls).
+    /// The compiledUnit parameter should be a BytecodeCompiledUnit.
+    /// </summary>
+    public static RuntimeValue FromClassReference(object compiledUnit) =>
+        new(RuntimeValueType.ClassReference, objectValue: compiledUnit);
+
+    /// <summary>
     /// Create an array value with a specified size.
     /// </summary>
     public static RuntimeValue CreateArray(int size)
@@ -129,9 +141,17 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
         RuntimeValueType.Integer => _intValue != 0,
         RuntimeValueType.Double => _doubleValue != 0,
         RuntimeValueType.String => !string.IsNullOrEmpty(_stringValue),
-        RuntimeValueType.Object => _objectValue != null,
+        RuntimeValueType.Object => _objectValue switch
+        {
+            null => false,
+            // In C++, TListaItem::getValor() returns (ListaX != nullptr)
+            // An invalidated list item must evaluate as falsy for epara loops
+            Types.ListaItemInstance li => li.IsValid,
+            _ => true
+        },
         RuntimeValueType.Boolean => _intValue != 0,
         RuntimeValueType.Array => _objectValue is List<RuntimeValue> list && list.Count > 0,
+        RuntimeValueType.ClassReference => _objectValue != null,
         _ => false
     };
 
@@ -175,6 +195,7 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
         RuntimeValueType.Array => _objectValue is List<RuntimeValue> list
             ? $"[{string.Join(", ", list.Select(v => v.AsString()))}]"
             : "[]",
+        RuntimeValueType.ClassReference => _objectValue?.ToString() ?? "nulo",
         _ => string.Empty
     };
 
@@ -391,11 +412,22 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
 
     private static int Compare(RuntimeValue a, RuntimeValue b)
     {
-        // If first operand is string, compare as strings
+        // If both operands are strings, compare as strings
+        if (a._type == RuntimeValueType.String && b._type == RuntimeValueType.String)
+            return string.Compare(a.AsString(), b.AsString(), StringComparison.Ordinal);
+
+        // If either operand is a number type, compare as numbers (auto-convert strings)
+        if (a._type == RuntimeValueType.Integer || a._type == RuntimeValueType.Double ||
+            b._type == RuntimeValueType.Integer || b._type == RuntimeValueType.Double)
+        {
+            return a.AsDouble().CompareTo(b.AsDouble());
+        }
+
+        // For other types (both strings or mixed), compare as strings
         if (a._type == RuntimeValueType.String)
             return string.Compare(a.AsString(), b.AsString(), StringComparison.Ordinal);
 
-        // Compare as numbers
+        // Compare as numbers by default
         return a.AsDouble().CompareTo(b.AsDouble());
     }
 
@@ -471,7 +503,7 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
             RuntimeValueType.Null => true,
             RuntimeValueType.Integer => _intValue == other._intValue,
             RuntimeValueType.Double => _doubleValue == other._doubleValue,
-            RuntimeValueType.String => _stringValue == other._stringValue,
+            RuntimeValueType.String => string.Equals(_stringValue, other._stringValue, StringComparison.OrdinalIgnoreCase),
             RuntimeValueType.Object => ReferenceEquals(_objectValue, other._objectValue),
             RuntimeValueType.Boolean => _intValue == other._intValue,
             _ => false
@@ -507,6 +539,7 @@ public readonly struct RuntimeValue : IEquatable<RuntimeValue>
         RuntimeValueType.String => _stringValue?.GetHashCode() ?? 0,
         RuntimeValueType.Object => _objectValue?.GetHashCode() ?? 0,
         RuntimeValueType.Array => _objectValue?.GetHashCode() ?? 0,
+        RuntimeValueType.ClassReference => _objectValue?.GetHashCode() ?? 0,
         _ => 0
     };
 

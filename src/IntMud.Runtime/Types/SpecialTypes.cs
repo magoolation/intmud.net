@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using IntMud.Runtime.Values;
 
 namespace IntMud.Runtime.Types;
@@ -22,9 +23,19 @@ public static class SpecialTypeRegistry
         "telatxt"
     };
 
+    private static readonly HashSet<string> _socketTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "socket"
+    };
+
     private static readonly HashSet<string> _serverTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "serv"
+    };
+
+    private static readonly HashSet<string> _arqExecTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "arqexec"
     };
 
     private static readonly HashSet<string> _debugTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -48,9 +59,19 @@ public static class SpecialTypeRegistry
     public static bool IsConsoleType(string typeName) => _consoleTypes.Contains(typeName);
 
     /// <summary>
+    /// Check if a type is a socket type (fires msg/fechou events on I/O).
+    /// </summary>
+    public static bool IsSocketType(string typeName) => _socketTypes.Contains(typeName);
+
+    /// <summary>
     /// Check if a type is a server type (manages socket connections).
     /// </summary>
     public static bool IsServerType(string typeName) => _serverTypes.Contains(typeName);
+
+    /// <summary>
+    /// Check if a type is an arqexec type (fires msg/fechou events on process I/O).
+    /// </summary>
+    public static bool IsArqExecType(string typeName) => _arqExecTypes.Contains(typeName);
 
     /// <summary>
     /// Check if a type is a debug type (provides debug information).
@@ -62,7 +83,8 @@ public static class SpecialTypeRegistry
     /// </summary>
     public static bool IsSpecialType(string typeName) =>
         IsTimerType(typeName) || IsExecTriggerType(typeName) ||
-        IsConsoleType(typeName) || IsServerType(typeName) ||
+        IsConsoleType(typeName) || IsSocketType(typeName) ||
+        IsServerType(typeName) || IsArqExecType(typeName) ||
         IsDebugType(typeName);
 
     /// <summary>
@@ -245,11 +267,66 @@ public sealed class SpecialTypeManager
     }
 
     /// <summary>
+    /// Thread-safe queue for events fired from background threads (socket I/O, etc.).
+    /// These are drained synchronously in the event loop.
+    /// </summary>
+    private readonly ConcurrentQueue<PendingScriptEvent> _pendingEvents = new();
+
+    /// <summary>
+    /// Enqueue an event to be dispatched in the next event loop iteration.
+    /// Thread-safe - can be called from background I/O tasks.
+    /// </summary>
+    public void EnqueueEvent(PendingScriptEvent evt)
+    {
+        _pendingEvents.Enqueue(evt);
+    }
+
+    /// <summary>
+    /// Drain all pending events from the queue.
+    /// Called from the event loop thread.
+    /// </summary>
+    public IEnumerable<PendingScriptEvent> DrainPendingEvents()
+    {
+        var events = new List<PendingScriptEvent>();
+        while (_pendingEvents.TryDequeue(out var evt))
+        {
+            events.Add(evt);
+        }
+        return events;
+    }
+
+    /// <summary>
     /// Clear all registered instances.
     /// </summary>
     public void Clear()
     {
         _timers.Clear();
         _execTriggers.Clear();
+        // Drain any pending events
+        while (_pendingEvents.TryDequeue(out _)) { }
+    }
+}
+
+/// <summary>
+/// Represents a script event pending dispatch.
+/// Queued from background I/O threads, dispatched synchronously in the event loop.
+/// Matches C++ ExecIni/ExecArg/ExecX/ExecFim pattern.
+/// </summary>
+public sealed class PendingScriptEvent
+{
+    /// <summary>The object that owns the variable that fired this event.</summary>
+    public BytecodeRuntimeObject Owner { get; }
+
+    /// <summary>The handler function name (e.g., "s_msg", "servidor_socket").</summary>
+    public string HandlerName { get; }
+
+    /// <summary>Arguments to pass to the handler function.</summary>
+    public RuntimeValue[] Args { get; }
+
+    public PendingScriptEvent(BytecodeRuntimeObject owner, string handlerName, params RuntimeValue[] args)
+    {
+        Owner = owner;
+        HandlerName = handlerName;
+        Args = args;
     }
 }
